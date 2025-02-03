@@ -5,7 +5,3 @@ __pycache__/
 
 # Virtual environment
 myenv/
-
-# Data files (if you want to keep raw data local only)
-data/raw/
-data/processed/
