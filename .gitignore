@@ -4,4 +4,10 @@ __pycache__/
 *.so
 
 # Virtual environment
-myenv/
+env/
+
+# Data files
+data/processed/
+
+# Ignore egg-info directories
+*.egg-info/

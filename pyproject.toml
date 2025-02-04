@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kent_repertory_etl"
+version = "0.1"
+dependencies = []
+
+[tool.black]
+line-length = 120
+target-version = ['py311']
+exclude = '''
+/(
+    env
+  | __pycache__
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 120
+skip = ["env", "__pycache__", "build", "dist"]
+
+[tool.flake8]
+max-line-length = 120

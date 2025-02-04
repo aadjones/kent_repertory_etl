@@ -1,4 +1,5 @@
 import os
+
 import pytest
 from bs4 import BeautifulSoup
 
@@ -7,11 +8,13 @@ from bs4 import BeautifulSoup
 # into a module that we can import here.
 from src.scraper import load_local_html
 
+
 # We can define a fixture for loading our sample HTML file.
 @pytest.fixture
 def sample_html():
     filepath = os.path.join("data", "raw", "kent0000_P1.html")
     return load_local_html(filepath)
+
 
 def test_title_extraction(sample_html):
     """Test that the title is correctly extracted."""
@@ -20,15 +23,17 @@ def test_title_extraction(sample_html):
     title = title_tag.get_text(strip=True) if title_tag else ""
     assert title == "KENT0000", f"Expected title to be 'KENT0000', got '{title}'"
 
+
 def test_anchor_extraction(sample_html):
     """Test that named anchors are found and correctly extracted."""
     soup = BeautifulSoup(sample_html, "lxml")
     anchors = soup.find_all("a", attrs={"name": True})
     names = [a.get("name") for a in anchors]
-    
+
     expected_names = ["P1", "ABSENTMINDED", "ABSORBED", "P2", "ANGER", "P3", "P4", "ANXIETY", "P5"]
     for name in expected_names:
         assert name in names, f"Expected anchor name '{name}' not found."
+
 
 def test_paragraph_extraction(sample_html):
     """Test that a few paragraphs are extracted and not empty."""
