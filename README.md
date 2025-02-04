@@ -25,7 +25,7 @@ This project converts the static, hierarchical, hyperlink-based content of the K
    ```
 1. Install project in editable mode:
    ```bash
-   pip install -e 
+   pip install -e .
    ```
 1. Run the scraper to fetch and parse the HTML content:
    ```bash
