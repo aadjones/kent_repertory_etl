@@ -24,7 +24,6 @@ This project converts the static, hierarchical, hyperlink-based content of the K
    source env/bin/activate
    # On Windows:
    .\env\Scripts\activate
-   source myenv/bin/activate
    ```
    
 1. Run the scraper to fetch and parse the HTML content:
