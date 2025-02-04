@@ -14,19 +14,19 @@ This project converts the static, hierarchical, hyperlink-based content of the K
 - `tests/` - Unit tests for the modules.
 
 ## Setup
-1. Create and activate a virtual environment:
+1. From the project root, run
    ```bash
-   python -m venv env
+   make
+   ```
+   Then, activate the virtual environment.
+   ```
+   # On macOS/Linux:
+   source env/bin/activate
+   # On Windows:
+   .\env\Scripts\activate
    source myenv/bin/activate
-
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
    ```
-1. Install project in editable mode:
-   ```bash
-   pip install -e .
-   ```
+   
 1. Run the scraper to fetch and parse the HTML content:
    ```bash
    python src/scraper.py
