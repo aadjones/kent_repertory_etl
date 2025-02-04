@@ -11,3 +11,10 @@ data/processed/
 
 # Ignore egg-info directories
 *.egg-info/
+
+# macOS system files
+.DS_Store
+
+# Windows system files
+Thumbs.db
+Desktop.ini
