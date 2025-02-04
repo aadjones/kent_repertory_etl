@@ -16,14 +16,17 @@ This project converts the static, hierarchical, hyperlink-based content of the K
 ## Setup
 1. Create and activate a virtual environment:
    ```bash
-   python -m venv myenv
+   python -m venv env
    source myenv/bin/activate
 
 1. Install dependencies:
    ```bash
    pip install -r requirements.txt
    ```
-
+1. Install project in editable mode:
+   ```bash
+   pip install -e 
+   ```
 1. Run the scraper to fetch and parse the HTML content:
    ```bash
    python src/scraper.py
