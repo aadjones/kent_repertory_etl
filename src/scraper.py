@@ -13,7 +13,7 @@ def fetch_html(url):
     Raises an HTTPError if the request fails.
     """
     response = requests.get(url)
-    response.raise_for_status()  # Raise an error for bad responses.
+    response.raise_for_status()
     return response.text
 
 
@@ -28,13 +28,14 @@ def load_local_html(filepath):
 def is_decorative(text):
     """
     Return True if the text consists only of hyphens (and whitespace)
-    or if it is a decorative arrow line (e.g., containing ">>>>").
+    or looks like a decorative separator (e.g., contains ">>>>").
     """
     stripped = text.strip()
     if not stripped:
         return True
-    # If the text is only hyphens or arrows, return True.
-    if all(char in "->" for char in stripped):
+    if all(char in "- " for char in stripped):
+        return True
+    if ">>>" in stripped:
         return True
     return False
 
@@ -48,49 +49,77 @@ def remove_parentheses(text):
 
 def normalize_subject_title(title):
     """
-    Normalize a subject title by removing any page markers such as "p. 1".
+    Normalize a subject title by removing any page markers like "p. 1".
     For example, "MIND p. 1" becomes "MIND".
     """
-    # Remove any "p. <number>" (case-insensitive) from the title.
-    normalized = re.sub(r"\s*p\.\s*\d+", "", title, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s*p\.?\s*\d+", "", title, flags=re.IGNORECASE)
     return normalized.strip()
 
 
-def merge_duplicate_subjects(rubrics):
+def merge_duplicate_rubrics(rubrics):
     """
-    Given a list of rubric dictionaries (each with keys: "title", "description",
-    "remedies", and "subrubrics"), merge rubrics that represent the same subject.
+    Given a list of rubric dictionaries, merge those with the same title.
+    Two rubrics are considered duplicates if their title (after lowercasing
+    and stripping) is identical.
 
-    We ignore any rubric whose normalized title is "KENT".
-    If duplicate subjects are found (e.g., "MIND p. 1" and "MIND"), we merge
-    their descriptions, remedy lists, and subrubrics.
+    Merging is done by concatenating descriptions (with a space),
+    extending remedy lists, and merging subrubrics.
     """
     merged = {}
-    order = []  # To preserve original order.
+    order = []
+    for rub in rubrics:
+        title = rub.get("title", "").strip()
+        key = title.lower()
+        if key in merged:
+            merged[key]["description"] += " " + rub.get("description", "")
+            merged[key]["remedies"].extend(rub.get("remedies", []))
+            merged[key]["subrubrics"].extend(rub.get("subrubrics", []))
+        else:
+            merged[key] = rub.copy()
+            order.append(key)
+    for key in merged:
+        merged[key]["description"] = merged[key]["description"].strip()
+        merged[key]["remedies"] = list(dict.fromkeys(merged[key]["remedies"]))
+    return [merged[k] for k in order]
+
+
+def group_by_page(rubrics, subject_keyword="MIND"):
+    """
+    Group a flat list of rubric dictionaries into page boundaries.
+
+    We assume that a rubric whose title matches a boundary pattern
+    (e.g., "MIND p. 1", "MIND p. 2", etc.) marks the start of a new page.
+    That boundary rubric is used solely as a marker and is not added
+    to the page's rubric list. Also, if a rubric’s normalized title equals
+    the subject keyword (e.g. "MIND"), we skip it.
+
+    Returns a list of dictionaries, each with keys:
+      - page: the page marker (e.g., "P1")
+      - rubrics: list of rubric dictionaries belonging to that page.
+    """
+    groups = []
+    current_group = None
+    page_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
 
     for rub in rubrics:
         title = rub.get("title", "")
-        norm = normalize_subject_title(title)
-        # Skip if the normalized title is "kent" (we ignore the top-level "KENT" marker)
-        if norm.lower() == "kent":
-            continue
-        # Also ignore titles that look decorative (for example, those containing ">>>>")
-        if ">>>" in title:
-            continue
-
-        if norm in merged:
-            # Merge the descriptions (concatenate) and extend remedies and subrubrics.
-            merged[norm]["description"] += " " + rub.get("description", "")
-            merged[norm]["remedies"].extend(rub.get("remedies", []))
-            merged[norm]["subrubrics"].extend(rub.get("subrubrics", []))
+        match = page_pattern.match(title)
+        if match:
+            # This rubric is a boundary marker.
+            page_num = match.group(1)
+            if current_group is None or current_group["page"] != f"P{page_num}":
+                current_group = {"page": f"P{page_num}", "rubrics": []}
+                groups.append(current_group)
+            # Do not add the boundary rubric itself.
         else:
-            merged[norm] = rub.copy()
-            # Overwrite title with the normalized version if desired.
-            merged[norm]["title"] = norm
-            order.append(norm)
-
-    # Return the merged rubrics in the order they first appeared.
-    return [merged[key] for key in order]
+            if normalize_subject_title(title).upper() == subject_keyword.upper():
+                continue
+            if current_group is None:
+                continue
+            current_group["rubrics"].append(rub)
+    for group in groups:
+        group["rubrics"] = merge_duplicate_rubrics(group["rubrics"])
+    return groups
 
 
 def parse_directory(tag, level=0):
@@ -99,8 +128,9 @@ def parse_directory(tag, level=0):
 
     Each rubric is represented as a dictionary with:
       - title: text of the rubric (with parentheses removed)
-      - remedies: a list of remedy abbreviations (if text after a colon is present)
-      - subrubrics: a list of child rubrics (parsed recursively)
+      - description: text following a colon if present
+      - remedies: list of remedy abbreviations (if present)
+      - subrubrics: list of child rubrics (parsed recursively)
 
     Decorative paragraphs (e.g., "----------" or ">>>>") are skipped.
     """
@@ -121,7 +151,6 @@ def parse_directory(tag, level=0):
                     rubric["remedies"] = remedies
                 else:
                     rubric["title"] = text.strip()
-                    rubric["description"] = ""
                 rubrics.append(rubric)
             elif child.name == "dir":
                 subrubrics = parse_directory(child, level + 1)
@@ -136,42 +165,32 @@ def parse_directory(tag, level=0):
 
 def parse_chapter(html, page_info=None):
     """
-    Parse the HTML of a single page into a Chapter entity.
+    Parse the HTML of a single Kent page (covering a subject like MIND spanning multiple pages)
+    into a Chapter entity.
 
-    The structure we assume:
-      - The page begins with a top-level decorative section (e.g. "KENT" and decorative lines) that we ignore.
-      - Then comes a subject heading (for example, "MIND p. 1") that defines the parent subject for that page.
-      - Under the subject, there are rubric entries (and subrubrics) that form the tree structure.
+    We assume the HTML belongs to one subject (e.g., MIND) and includes multiple
+    page boundaries (e.g., "MIND p. 1", "MIND p. 2", etc.). The content between boundaries
+    are the rubrics that belong to that page.
 
-    Returns a dictionary representing the chapter, with keys:
-      - title
-      - anchors (list)
-      - rubrics (list, hierarchical structure)
-      - (optionally) page_info
+    Returns a dictionary with keys:
+      - title: from the <title> tag
+      - subject: overall subject (e.g., "MIND")
+      - pages: list of page groups, each with a "page" marker (e.g., "P1") and a list of rubrics.
     """
     soup = BeautifulSoup(html, "lxml")
     chapter = {}
 
-    # Chapter title from the <title> tag.
+    # Extract chapter title.
     title_tag = soup.find("title")
     chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
     chapter["title"] = chapter_title
 
-    # Optional page_info (e.g., page number) can be stored.
-    if page_info:
-        chapter["page_info"] = page_info
+    # We no longer include anchors.
 
-    # Extract anchors.
-    chapter["anchors"] = []
-    for a in soup.find_all("a", attrs={"name": True}):
-        chapter["anchors"].append({"name": a.get("name"), "text": a.get_text(strip=True)})
-
-    # Look for the outer <dir> element.
-    dir_tag = soup.find("dir")
-    if dir_tag:
-        rubrics = parse_directory(dir_tag)
+    # Parse rubrics: first try using nested <dir> tags; if not, fallback to <p> tags.
+    if soup.find("dir"):
+        rubrics = parse_directory(soup.find("dir"))
     else:
-        # Fallback: flat parsing from <p> tags.
         rubrics = []
         paragraphs = soup.find_all("p")
         current_rubric = None
@@ -200,15 +219,17 @@ def parse_chapter(html, page_info=None):
         if current_rubric:
             rubrics.append(current_rubric)
 
-    # Merge duplicate subject headings.
-    chapter["rubrics"] = merge_duplicate_subjects(rubrics)
+    # Group the rubrics into page boundaries using the subject marker "MIND".
+    pages = group_by_page(rubrics, subject_keyword="MIND")
+    chapter["pages"] = pages
+    chapter["subject"] = "MIND"
     return chapter
 
 
 def clean_filename(text):
     """
     Clean up text to be safe for a filename:
-      - Lowercase the text,
+      - Lowercase,
       - Replace spaces with underscores,
       - Remove non-alphanumeric characters.
     """
@@ -258,9 +279,8 @@ def main():
         print(f"No URL provided. Using local file: {local_path}")
         html_content = load_local_html(local_path)
 
-    # Optionally, if you want to pass page info (e.g., from filename "kent0000_P1.html")
-    page_info = {"page": "P1"}
-
+    # Indicate that this file covers pages 1-5.
+    page_info = {"pages_covered": "p. 1-5"}
     chapter_entity = parse_chapter(html_content, page_info)
     save_chapter(chapter_entity)
 
