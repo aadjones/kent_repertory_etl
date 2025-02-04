@@ -4,9 +4,7 @@ import re
 import sys
 
 import requests
-from bs4 import BeautifulSoup
-
-from utils import is_decorative
+from bs4 import BeautifulSoup, Tag
 
 
 def fetch_html(url):
@@ -27,75 +25,192 @@ def load_local_html(filepath):
         return file.read()
 
 
-def parse_chapter(html):
+def is_decorative(text):
     """
-    Parse the HTML of a single page into a 'Chapter' entity.
+    Return True if the text consists only of hyphens (and whitespace)
+    or if it is a decorative arrow line (e.g., containing ">>>>").
+    """
+    stripped = text.strip()
+    if not stripped:
+        return True
+    # If the text is only hyphens or arrows, return True.
+    if all(char in "->" for char in stripped):
+        return True
+    return False
 
-    The Chapter entity is a dictionary with:
-      - title: The chapter title from the <title> tag.
-      - anchors: A list of anchors (each with 'name' and 'text') from <a> tags with a NAME attribute.
-      - rubrics: A list of rubric entities parsed from <p> tags.
 
-    A new rubric is started when a <p> tag contains a <b> tag.
-    Decorative paragraphs (e.g., "----------") are skipped.
-    Non-bold paragraphs (if not decorative) are appended to the current rubric's description.
-    If a rubric header contains a colon ":", it is split into a header part and a remedy list part.
+def remove_parentheses(text):
+    """
+    Remove any content inside parentheses (and the parentheses themselves).
+    """
+    return re.sub(r"\([^)]*\)", "", text)
+
+
+def normalize_subject_title(title):
+    """
+    Normalize a subject title by removing any page markers such as "p. 1".
+    For example, "MIND p. 1" becomes "MIND".
+    """
+    # Remove any "p. <number>" (case-insensitive) from the title.
+    normalized = re.sub(r"\s*p\.\s*\d+", "", title, flags=re.IGNORECASE)
+    return normalized.strip()
+
+
+def merge_duplicate_subjects(rubrics):
+    """
+    Given a list of rubric dictionaries (each with keys: "title", "description",
+    "remedies", and "subrubrics"), merge rubrics that represent the same subject.
+
+    We ignore any rubric whose normalized title is "KENT".
+    If duplicate subjects are found (e.g., "MIND p. 1" and "MIND"), we merge
+    their descriptions, remedy lists, and subrubrics.
+    """
+    merged = {}
+    order = []  # To preserve original order.
+
+    for rub in rubrics:
+        title = rub.get("title", "")
+        norm = normalize_subject_title(title)
+        # Skip if the normalized title is "kent" (we ignore the top-level "KENT" marker)
+        if norm.lower() == "kent":
+            continue
+        # Also ignore titles that look decorative (for example, those containing ">>>>")
+        if ">>>" in title:
+            continue
+
+        if norm in merged:
+            # Merge the descriptions (concatenate) and extend remedies and subrubrics.
+            merged[norm]["description"] += " " + rub.get("description", "")
+            merged[norm]["remedies"].extend(rub.get("remedies", []))
+            merged[norm]["subrubrics"].extend(rub.get("subrubrics", []))
+        else:
+            merged[norm] = rub.copy()
+            # Overwrite title with the normalized version if desired.
+            merged[norm]["title"] = norm
+            order.append(norm)
+
+    # Return the merged rubrics in the order they first appeared.
+    return [merged[key] for key in order]
+
+
+def parse_directory(tag, level=0):
+    """
+    Recursively parse a <dir> tag to extract rubrics in a hierarchical structure.
+
+    Each rubric is represented as a dictionary with:
+      - title: text of the rubric (with parentheses removed)
+      - remedies: a list of remedy abbreviations (if text after a colon is present)
+      - subrubrics: a list of child rubrics (parsed recursively)
+
+    Decorative paragraphs (e.g., "----------" or ">>>>") are skipped.
+    """
+    rubrics = []
+    for child in tag.children:
+        if isinstance(child, Tag):
+            if child.name == "p":
+                text = child.get_text(" ", strip=True)
+                if is_decorative(text):
+                    continue
+                text = remove_parentheses(text)
+                rubric = {"title": "", "description": "", "remedies": [], "subrubrics": []}
+                if ":" in text:
+                    header, remedy_text = text.split(":", 1)
+                    rubric["title"] = header.strip()
+                    rubric["description"] = remedy_text.strip()
+                    remedies = [r.strip() for r in remedy_text.split(",") if r.strip()]
+                    rubric["remedies"] = remedies
+                else:
+                    rubric["title"] = text.strip()
+                    rubric["description"] = ""
+                rubrics.append(rubric)
+            elif child.name == "dir":
+                subrubrics = parse_directory(child, level + 1)
+                if rubrics:
+                    rubrics[-1]["subrubrics"].extend(subrubrics)
+                else:
+                    rubrics.extend(subrubrics)
+            else:
+                continue
+    return rubrics
+
+
+def parse_chapter(html, page_info=None):
+    """
+    Parse the HTML of a single page into a Chapter entity.
+
+    The structure we assume:
+      - The page begins with a top-level decorative section (e.g. "KENT" and decorative lines) that we ignore.
+      - Then comes a subject heading (for example, "MIND p. 1") that defines the parent subject for that page.
+      - Under the subject, there are rubric entries (and subrubrics) that form the tree structure.
+
+    Returns a dictionary representing the chapter, with keys:
+      - title
+      - anchors (list)
+      - rubrics (list, hierarchical structure)
+      - (optionally) page_info
     """
     soup = BeautifulSoup(html, "lxml")
     chapter = {}
 
-    # Extract chapter title from the <title> tag.
+    # Chapter title from the <title> tag.
     title_tag = soup.find("title")
-    chapter["title"] = title_tag.get_text(strip=True) if title_tag else "No title found"
+    chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
+    chapter["title"] = chapter_title
 
-    # Extract all anchors with a NAME attribute.
+    # Optional page_info (e.g., page number) can be stored.
+    if page_info:
+        chapter["page_info"] = page_info
+
+    # Extract anchors.
     chapter["anchors"] = []
     for a in soup.find_all("a", attrs={"name": True}):
         chapter["anchors"].append({"name": a.get("name"), "text": a.get_text(strip=True)})
 
-    rubrics = []
-    current_rubric = None
-    paragraphs = soup.find_all("p")
-
-    for p in paragraphs:
-        # Get the text with a space between inline elements.
-        text = p.get_text(" ", strip=True)
-        if is_decorative(text):
-            continue
-
-        # If the paragraph contains a <b> tag, treat it as a rubric header.
-        if p.find("b"):
-            # Save the previous rubric (if any).
-            if current_rubric:
-                rubrics.append(current_rubric)
-            # Split the text on a colon if present to separate header and remedy list.
-            if ":" in text:
-                rubric_header, remedy_text = text.split(":", 1)
+    # Look for the outer <dir> element.
+    dir_tag = soup.find("dir")
+    if dir_tag:
+        rubrics = parse_directory(dir_tag)
+    else:
+        # Fallback: flat parsing from <p> tags.
+        rubrics = []
+        paragraphs = soup.find_all("p")
+        current_rubric = None
+        for p in paragraphs:
+            text = p.get_text(" ", strip=True)
+            if is_decorative(text):
+                continue
+            text = remove_parentheses(text)
+            if p.find("b"):
+                if current_rubric:
+                    rubrics.append(current_rubric)
+                if ":" in text:
+                    header, remedy_text = text.split(":", 1)
+                else:
+                    header = text
+                    remedy_text = ""
+                current_rubric = {
+                    "title": header.strip(),
+                    "description": remedy_text.strip(),
+                    "remedies": [r.strip() for r in remedy_text.split(",") if r.strip()],
+                    "subrubrics": [],
+                }
             else:
-                rubric_header = text
-                remedy_text = ""
-            current_rubric = {"title": rubric_header.strip(), "description": remedy_text.strip(), "remedies": []}
-            # If remedy_text exists, split remedies by commas.
-            if remedy_text:
-                remedies = [r.strip() for r in remedy_text.split(",") if r.strip()]
-                current_rubric["remedies"] = remedies
-        else:
-            # Append non-bold paragraph text to the current rubric's description.
-            if current_rubric:
-                current_rubric["description"] += " " + text
+                if current_rubric:
+                    current_rubric["description"] += " " + text
+        if current_rubric:
+            rubrics.append(current_rubric)
 
-    # Append the last rubric if it exists.
-    if current_rubric:
-        rubrics.append(current_rubric)
-
-    chapter["rubrics"] = rubrics
+    # Merge duplicate subject headings.
+    chapter["rubrics"] = merge_duplicate_subjects(rubrics)
     return chapter
 
 
 def clean_filename(text):
     """
-    Clean up text to be safe for a filename.
-    Lowercase the text, replace spaces with underscores, and remove non-alphanumeric characters.
+    Clean up text to be safe for a filename:
+      - Lowercase the text,
+      - Replace spaces with underscores,
+      - Remove non-alphanumeric characters.
     """
     text = text.lower()
     text = re.sub(r"\s+", "_", text)
@@ -111,7 +226,6 @@ def save_chapter(chapter, output_dir="data/processed"):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
-    # Generate a safe filename based on the chapter title.
     filename = f"chapter_{clean_filename(chapter.get('title', 'chapter'))}.json"
     output_path = os.path.join(output_dir, filename)
 
@@ -144,9 +258,10 @@ def main():
         print(f"No URL provided. Using local file: {local_path}")
         html_content = load_local_html(local_path)
 
-    # Parse the HTML into a chapter entity.
-    chapter_entity = parse_chapter(html_content)
-    # Save the chapter entity to a JSON file.
+    # Optionally, if you want to pass page info (e.g., from filename "kent0000_P1.html")
+    page_info = {"page": "P1"}
+
+    chapter_entity = parse_chapter(html_content, page_info)
     save_chapter(chapter_entity)
 
 
