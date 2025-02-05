@@ -12,7 +12,7 @@ def test_dynamic_section_extraction():
       </body>
     </html>
     """
-    from scraper import parse_chapter
+    from src.scraper import parse_chapter
 
     chapter = parse_chapter(html, page_info={"pages_covered": "p. 1-5"})
     # The section should be extracted as "MIND" from the line "MIND p. 1"

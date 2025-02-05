@@ -2,6 +2,8 @@ import logging
 import os
 import sys
 
+from bs4 import BeautifulSoup
+
 from scraper_utils import (
     extract_section_from_raw,
     fetch_html,
@@ -19,32 +21,49 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(m
 
 
 def parse_chapter(html, page_info=None):
-    import re
+    """
+    Parse the HTML of a single Kent page (covering a section spanning 5 pages)
+    into a Chapter entity.
 
-    from bs4 import BeautifulSoup
+    Output schema:
+      - title: from <title> tag
+      - section: dynamically extracted (e.g., "MIND", "VERTIGO", etc.)
+      - pages: a list of page groups, each with:
+           - page: page marker (e.g., "P100", "P101", etc.)
+           - content: a list of rubric dictionaries, where each dictionary has:
+                 - rubric: rubric title (without colons)
+                 - remedies: list of remedy dictionaries
+                 - (optionally) subcontent: nested rubric dictionaries
+      - page_info: additional metadata (if provided)
+
+    Any rubric with the title "KENT" (ignoring case) is filtered out.
+    """
+    import re
 
     soup = BeautifulSoup(html, "lxml")
     chapter = {}
 
+    # Extract chapter title.
     title_tag = soup.find("title")
     chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
     chapter["title"] = chapter_title
     if page_info:
         chapter["page_info"] = page_info
 
-    # First, extract the section from the raw HTML.
+    # Extract section from raw HTML BEFORE filtering decorative content.
     section = extract_section_from_raw(html)
     if not section:
         section = "UNKNOWN"
 
+    # Parse rubrics.
     if soup.find("dir"):
         rubrics = parse_directory(soup.find("dir"))
     else:
-        # fallback to <p> tags parsing
         rubrics = []
         paragraphs = soup.find_all("p")
         current_rubric = None
-        boundary_pattern = re.compile(r"^MIND\s*p\.?\s*\d+", re.IGNORECASE)
+        # Use a boundary pattern that looks for a "p." marker.
+        boundary_pattern = re.compile(r".*\bp\.?\s*\d+", re.IGNORECASE)
         for p in paragraphs:
             raw = p.decode_contents()
             if is_decorative(raw):
@@ -52,6 +71,7 @@ def parse_chapter(html, page_info=None):
             full_text = BeautifulSoup(raw, "lxml").get_text(strip=True)
             if p.find("b"):
                 if boundary_pattern.match(full_text):
+                    # This is a boundary marker.
                     header = full_text.replace(":", "").strip()
                     current_rubric = {"title": header, "description": "", "remedies": [], "subrubrics": []}
                 else:
@@ -81,8 +101,15 @@ def parse_chapter(html, page_info=None):
             if current_rubric:
                 rubrics.append(current_rubric)
 
+    # Filter out any rubric with title "KENT".
     rubrics = [r for r in rubrics if r.get("title", "").strip().upper() != "KENT"]
 
+    # (Optional) If a parsed section is available from rubrics, update section.
+    # parsed_section = extract_section(rubrics)
+    # if parsed_section != "UNKNOWN":
+    #     section = parsed_section
+
+    # Group rubrics into pages using the section as the subject keyword.
     pages = group_by_page(rubrics, subject_keyword=section)
     for page in pages:
         page["content"] = transform_content(page.pop("rubrics"))

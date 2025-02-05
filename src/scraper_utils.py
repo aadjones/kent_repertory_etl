@@ -37,10 +37,17 @@ def load_local_html(filepath):
 def is_decorative(text):
     """
     Return True if the text is considered decorative.
-    This includes text that is solely hyphens, whitespace, arrow markers,
-    or a combination of hyphens and '>' characters.
+    Decorative text is usually just hyphens or arrow markers.
+    However, if the text contains a page boundary marker (e.g. "p. 1")
+    or a section marker (e.g. "MIND p. 1"), then it is NOT decorative.
     """
     stripped = text.strip()
+    # If the text matches a page-boundary pattern, then it's not decorative.
+    import re
+
+    if re.search(r"\bp\.?\s*\d+", stripped, re.IGNORECASE):
+        return False
+    # Otherwise, consider it decorative if it's empty or made only of hyphens and spaces.
     if not stripped:
         return True
     if all(char in "- " for char in stripped):
@@ -71,9 +78,9 @@ def normalize_subject_title(title):
 def merge_duplicate_rubrics(rubrics):
     """
     Merge rubrics with the same title.
-    Merging is done by concatenating descriptions (with a space),
-    extending remedy lists, and merging subrubrics.
-    For remedy lists (which are lists of dictionaries), deduplicate using each remedy's (name, grade).
+    Merging is done by extending remedy lists and merging subrubrics.
+    For remedy lists (lists of dictionaries), deduplicate using each remedy's (name, grade).
+    This version ignores descriptions completely.
     """
     merged = {}
     order = []
@@ -81,14 +88,17 @@ def merge_duplicate_rubrics(rubrics):
         title = rub.get("title", "").strip()
         key = title.lower()
         if key in merged:
-            merged[key]["description"] += " " + rub.get("description", "")
+            # Extend remedy lists and subrubrics.
             merged[key]["remedies"].extend(rub.get("remedies", []))
             merged[key]["subrubrics"].extend(rub.get("subrubrics", []))
         else:
-            merged[key] = rub.copy()
+            # Copy the rubric; if it has a description, ignore it in the final merged output.
+            new_rub = rub.copy()
+            new_rub.pop("description", None)
+            merged[key] = new_rub
             order.append(key)
+    # Deduplicate remedies using (name, grade)
     for key in merged:
-        merged[key]["description"] = merged[key]["description"].strip()
         unique_remedies = []
         seen = set()
         for remedy in merged[key]["remedies"]:
@@ -97,53 +107,57 @@ def merge_duplicate_rubrics(rubrics):
                 seen.add(remedy_key)
                 unique_remedies.append(remedy)
         merged[key]["remedies"] = unique_remedies
-    logger.debug(f"Merged rubrics: {merged}")
     return [merged[k] for k in order]
 
 
-def group_by_page(rubrics, subject_keyword="MIND"):
+def group_by_page(rubrics, subject_keyword=None):
     """
-    Group a flat list of rubric dictionaries into page boundaries.
+    Group a list of rubric dictionaries into pages based on boundary markers.
 
-    We assume that a rubric whose title matches a boundary pattern
-    (e.g., "MIND p. 1", "MIND p. 2", etc.) marks the start of a new page.
-    Such boundary rubrics are used only as markers and are not added to the page's rubric list.
-    Also, if a rubric’s normalized title equals the subject keyword (e.g., "MIND")
-    with no page marker, we skip it.
+    A boundary marker is any rubric whose title contains a page marker, e.g.
+    "MIND p. 100" or "VERTIGO p. 96". If subject_keyword is provided, the boundary
+    must start with that keyword; otherwise, we match any boundary marker.
 
-    If no boundary is found at all, then return a single page group (P1) that contains all rubrics.
+    We assume that each HTML file is expected to cover exactly 5 pages.
 
-    Returns a list of dictionaries, each with keys:
-      - page: the page marker (e.g., "P1")
-      - rubrics: list of rubric dictionaries belonging to that page.
+    The function iterates over the rubrics in order. When a rubric's title matches
+    the boundary pattern, a new page group is started (using the number captured).
+    Otherwise, rubrics are added to the current page.
+
+    Returns a list of page groups. Each page group is a dictionary:
+      { "page": "P<number>", "rubrics": [ list of rubric dictionaries ] }
     """
     import re
 
-    groups = []
-    current_group = None
-    page_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
+    pages = []
+    current_page = None
+
+    if subject_keyword:
+        # Pattern with one capturing group: the page number.
+        boundary_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
+    else:
+        # Pattern with two capturing groups: group(1) is section, group(2) is page number.
+        boundary_pattern = re.compile(r"^(.*?)\s*p\.?\s*(\d+)", re.IGNORECASE)
 
     for rub in rubrics:
-        title = rub.get("title", "")
-        match = page_pattern.match(title)
-        if match:
-            page_num = match.group(1)
-            # Start a new group for a boundary marker.
-            if current_group is None or current_group["page"] != f"P{page_num}":
-                current_group = {"page": f"P{page_num}", "rubrics": []}
-                groups.append(current_group)
-            # Do not add the boundary rubric itself.
+        title = rub.get("title", "").strip()
+        m = boundary_pattern.match(title)
+        if m:
+            # If subject_keyword is provided, the page number is in group(1); otherwise in group(2).
+            if subject_keyword:
+                page_num = m.group(1).strip()
+            else:
+                page_num = m.group(2).strip()
+            # Start a new page group.
+            current_page = {"page": f"P{page_num}", "rubrics": []}
+            pages.append(current_page)
         else:
-            if normalize_subject_title(title).upper() == subject_keyword.upper():
-                continue
-            if current_group is None:
+            if current_page is None:
                 # If no boundary has been encountered yet, start a default group "P1".
-                current_group = {"page": "P1", "rubrics": []}
-                groups.append(current_group)
-            current_group["rubrics"].append(rub)
-    for group in groups:
-        group["rubrics"] = merge_duplicate_rubrics(group["rubrics"])
-    return groups
+                current_page = {"page": "P1", "rubrics": []}
+                pages.append(current_page)
+            current_page["rubrics"].append(rub)
+    return pages
 
 
 def parse_remedy(remedy_snippet):
@@ -271,51 +285,40 @@ def save_chapter(chapter, output_dir="data/processed"):
     logger.info(f"Chapter saved to {output_path}")
 
 
+def extract_section_from_raw(html):
+    """
+    Scan the raw HTML (after extracting visible text) for a section boundary pattern.
+    Look for a string such as "MIND p. 1" or "VERTIGO p. 96" and return the text before
+    the page marker (uppercased), ignoring any match that equals "KENT".
+    """
+    import re
+
+    from bs4 import BeautifulSoup
+
+    text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+    pattern = re.compile(r"([A-Z]+(?:\s+[A-Z]+)*)\s*p\.?\s*\d+", re.IGNORECASE)
+    matches = pattern.findall(text)
+    # Debug: print("DEBUG: Matches found:", matches)
+    for m in matches:
+        section = m.strip().upper()
+        if section != "KENT" and len(section) >= 3:
+            return section
+    return None
+
+
 def extract_section(rubrics):
     """
     Scan the list of parsed rubrics for a section boundary.
     Look for the first rubric whose title matches the pattern
-       <Section Name> p. <number>
+         <Section Name> p. <number>
     and return the section portion (uppercased). If none is found, return "UNKNOWN".
     """
-    # Pattern: capture any text (non-greedy) before "p." followed by a number.
     pattern = re.compile(r"^(?!KENT\b)(.*?)\s*p\.?\s*\d+", re.IGNORECASE)
     for rub in rubrics:
         title = rub.get("title", "").strip()
-        if title.upper() == "KENT":
-            continue
         m = pattern.match(title)
         if m:
             section = m.group(1).strip()
             if section:
                 return section.upper()
     return "UNKNOWN"
-
-
-def extract_section_from_raw(html):
-    """
-    Scan the raw HTML for a section boundary pattern.
-    First, extract all visible text from the HTML, then search for strings like
-    "MIND p. 1" or "VERTIGO p. 96" and return the text before the page marker (uppercased).
-    Filters out any match that is "KENT" or shorter than 3 characters.
-    """
-    import re
-
-    from bs4 import BeautifulSoup
-
-    # Extract all visible text from the HTML.
-    text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-    # Debug: print the extracted text if needed.
-    # print("DEBUG: Extracted text:", text)
-
-    # Pattern: one or more uppercase letters (possibly with spaces) followed by "p." and digits.
-    pattern = re.compile(r"([A-Z]+(?:\s+[A-Z]+)*)\s*p\.?\s*\d+", re.IGNORECASE)
-    matches = pattern.findall(text)
-    print("DEBUG: Matches found:", matches)  # Temporary debug output
-    for m in matches:
-        section = m.strip().upper()
-        # Filter out matches that are too short or equal to "KENT".
-        if len(section) < 3 or section == "KENT":
-            continue
-        return section
-    return None

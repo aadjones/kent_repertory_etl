@@ -1,7 +1,7 @@
 from bs4 import BeautifulSoup
 
-from scraper import parse_chapter
-from scraper_utils import (
+from src.scraper import parse_chapter
+from src.scraper_utils import (
     is_decorative,
     merge_duplicate_rubrics,
     normalize_subject_title,
@@ -114,7 +114,7 @@ def test_subrubric_extraction():
         "</dir>"
     )
 
-    from scraper import parse_chapter
+    from src.scraper import parse_chapter
 
     chapter = parse_chapter(html)
 
@@ -196,14 +196,12 @@ def test_parse_remedy_list():
 
 def test_merge_duplicate_rubrics():
     rubrics = [
-        {"title": "AMOROUS", "description": "desc1", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
-        {"title": "AMOROUS", "description": "desc2", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
+        {"title": "AMOROUS", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
+        {"title": "AMOROUS", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
     ]
     merged = merge_duplicate_rubrics(rubrics)
     assert len(merged) == 1
     merged_rub = merged[0]
-    assert "desc1" in merged_rub["description"]
-    assert "desc2" in merged_rub["description"]
     assert len(merged_rub["remedies"]) == 1
 
 
