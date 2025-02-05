@@ -62,31 +62,97 @@ def test_parse_directory_simple_rubric():
 # --- Subrubric extraction tests ---
 
 
-def test_parse_directory_nested():
-    # Create a nested directory structure.
-    html = """
-    <dir>
-      <p><b>ABSENT-MINDED: Acon., calc.</b></p>
-      <dir>
-         <p><b>morning: <i><font COLOR="#0000ff">tarent.</font></i></b></p>
-         <p>Extra detail for morning</p>
-      </dir>
-    </dir>
-    """
-    soup = BeautifulSoup(html, "lxml")
-    rubrics = parse_directory(soup.find("dir"))
-    # Expect one top-level rubric with one subrubric.
-    assert len(rubrics) == 1
-    parent = rubrics[0]
-    assert parent["title"] == "ABSENT-MINDED"
-    # There should be exactly one subrubric under the parent.
-    assert len(parent["subrubrics"]) == 1
-    child = parent["subrubrics"][0]
-    # The child rubric's title should be "morning" (after stripping formatting).
-    assert child["title"].lower() == "morning"
-    # The remedy "tarent." should be present with the correct grade.
-    remedy_names = [r["name"].lower() for r in child["remedies"]]
-    assert "tarent." in remedy_names
+def test_subrubric_extraction():
+
+    html = (
+        "<dir>"
+        '  <p><b><a NAME="ABSENTMINDED">ABSENT</a>-MINDED : <i><font COLOR="#0000ff">Acon.</font>, </i>'
+        'act-sp., aesc., agar., <i><font COLOR="#0000ff">agn.</font>, </i>all-c., '
+        '<i><font COLOR="#0000ff">alum.</font>, <font COLOR="#0000ff">am-c.</font>, </i>'
+        'am-m., <i><font COLOR="#0000ff">anac.</font>, </i>ang., <b><font COLOR="#ff0000">Apis.'
+        '</b></font>, arg-m., <i><font COLOR="#0000ff">arn.</font>, </i>ars., arum-t., asar., '
+        '<i><font COLOR="#0000ff">aur.</font>, <font COLOR="#0000ff">bar-c.</font>, '
+        '<font COLOR="#0000ff">bell.</font>, <font COLOR="#0000ff">bov.</font>, '
+        '<font COLOR="#0000ff">bufo.</font>, <font COLOR="#0000ff">calad.</font>, </i>'
+        'calc-s., calc., <b><font COLOR="#ff0000">Cann-i.</b></font>, cann-s., caps., '
+        'carb-ac., carb-s., <i><font COLOR="#0000ff">carl.</font>, </i>'
+        '<b><font COLOR="#ff0000">Caust.</b></font>, cench., <b><font COLOR="#ff0000">Cham.'
+        '</b></font>, chel., chin., <i><font COLOR="#0000ff">cic.</font>, </i>clem., '
+        '<i><font COLOR="#0000ff">cocc.</font>, </i>coff., colch., coloc., con., croc., '
+        'crot-h., <i><font COLOR="#0000ff">cupr.</font>, </i>cycl., daph., dirc., dulc., '
+        'elaps., <i><font COLOR="#0000ff">graph.</font>, </i>guai., ham., '
+        '<b><font COLOR="#ff0000">Hell.</b></font>, hep., hura., <i><font COLOR="#0000ff">'
+        'hyos.</font>, <font COLOR="#0000ff">ign.</font>, </i>jug-c., <i><font COLOR="#0000ff">'
+        'kali-br.</font>, <font COLOR="#0000ff">kali-c.</font>, <font COLOR="#0000ff">'
+        'kali-p.</font>, </i>kali-s., <i><font COLOR="#0000ff">kreos.</font>, '
+        '<font COLOR="#0000ff">lac-c.</font>, </i><b><font COLOR="#ff0000">Lach.'
+        '</b></font>, led., <i><font COLOR="#0000ff">lyc.</font>, </i>lyss., '
+        '<i><font COLOR="#0000ff">mag-c.</font>, </i>manc., mang., <i><font COLOR="#0000ff">'
+        'merc.</font>, </i><b><font COLOR="#ff0000">Mez.</b></font>, <i><font COLOR="#0000ff">'
+        'mosch.</font>, </i>naja., nat-c., <b><font COLOR="#ff0000">Nat-m.</b></font>, '
+        'nat-p., nit-ac., <b><font COLOR="#ff0000">Nux-m.</b></font>, <i><font COLOR="#0000ff">'
+        'nux-v.</font>, <font COLOR="#0000ff">olnd.</font>, <font COLOR="#0000ff">onos.</font>, '
+        '<font COLOR="#0000ff">op.</font>, <font COLOR="#0000ff">petr.</font>, '
+        '<font COLOR="#0000ff">ph-ac.</font>, <font COLOR="#0000ff">phos.</font>, </i>'
+        '<b><font COLOR="#ff0000">Plat.</b></font>, <i><font COLOR="#0000ff">plb.</font>, </i>'
+        '<b><font COLOR="#ff0000">Puls.</b></font>, rhod., <i><font COLOR="#0000ff">rhus-t.</font>, '
+        '</i>rhus-v., ruta., sars., <b><font COLOR="#ff0000">Sep.</b></font>, '
+        '<i><font COLOR="#0000ff">sil.</font>, </i>spong., stann., stram., sul-ac., '
+        '<i><font COLOR="#0000ff">sulph.</font>, </i>tarent., thuj., <b><font COLOR="#ff0000">'
+        "Verat.</b></font>, verb., viol-o., viol-t., zinc.</p>"
+        "<dir>"
+        "  <p>morning : Guai., nat-c., ph-ac., phos.</p>"
+        "  <p>11 a.m. to 4 p.m. : Kali-n.</p>"
+        "  <p>noon : Mosch.</p>"
+        "  <p>menses, during : Calc.</p>"
+        "  <p>periodical attacks of, short lasting : Fl-ac., "
+        '<i><font COLOR="#0000ff">nux-m.</font></i></p>'
+        "  <p>reading, while : Agn., lach., "
+        '<i><font COLOR="#0000ff">nux-m.</font></i>, ph-ac.</p>'
+        "  <p>starts when spoken to : Carb-ac.</p>"
+        "  <p>writing, while : Mag-c.</p>"
+        "</dir>"
+        "</dir>"
+    )
+
+    # Parse the snippet into a chapter
+    chapter = parse_chapter(html)
+
+    # There should be at least one page in the output.
+    assert len(chapter["pages"]) >= 1, "No pages were created."
+
+    # For the top-level rubric, we expect the title to be "ABSENTMINDED" (without colons).
+    top_rubric = chapter["pages"][0]["rubrics"][0]
+    normalized_title = top_rubric["title"].replace("-", "").replace(" ", "").upper()
+    assert "ABSENTMINDED" in normalized_title, "Top-level rubric title not as expected."
+
+    # Verify that no colons appear n any parsed text
+    def check_no_colon(item):
+        assert ":" not in item.get("title", ""), f"Colon found in title: {item.get('title')}"
+        assert ":" not in item.get("description", ""), f"Colon found in description: {item.get('description')}"
+        for remedy in item.get("remedies", []):
+            assert ":" not in remedy.get("name", ""), f"Colon found in remedy name: {remedy.get('name')}"
+        for sub in item.get("subrubrics", []):
+            check_no_colon(sub)
+
+    # Check all top-level rubrics and their subrubrics
+    for page in chapter["pages"]:
+        for rub in page["rubrics"]:
+            check_no_colon(rub)
+
+    # Check subrubric "morning" exists and its remedies are as expected.
+    # Find a subrubric with "morning" in its title.
+    morning_found = False
+    for rub in top_rubric.get("subrubrics", []):
+        if "morning" in rub["title"].lower():
+            morning_found = True
+            remedy_names = [r["name"].strip() for r in rub["remedies"]]
+            expected_remedies = ["Guai.", "nat-c.", "ph-ac.", "phos."]
+            for exp in expected_remedies:
+                assert exp.lower() in [
+                    r.lower() for r in remedy_names
+                ], f"Expected remedy {exp} not found in 'morning'."
+    assert morning_found, "Subrubric 'morning' not found."
 
 
 # --- Remedy extraction tests ---

@@ -20,34 +20,31 @@ logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(m
 
 def parse_chapter(html, page_info=None):
     """
-    Parse the HTML of a single Kent page (covering a subject like MIND spanning multiple pages)
-    into a Chapter entity.
+    Parse the HTML of a single Kent page into a Chapter entity.
 
-    We assume the HTML belongs to one subject (e.g., MIND) and includes multiple
-    page boundaries (e.g., "MIND p. 1", "MIND p. 2", etc.). The content between boundaries
-    are the rubrics that belong to that page.
+    If nested <dir> tags exist, use them; otherwise, use <p> tags.
+    This function groups rubrics into pages using subject boundary markers.
 
     Returns a dictionary with keys:
       - title: from the <title> tag
-      - subject: overall subject (e.g., "MIND")
-      - pages: list of page groups, each with a "page" marker (e.g., "P1") and a list of rubrics.
+      - subject: overall subject (extracted from boundaries)
+      - pages: list of page groups (each with "page" and "rubrics")
+      - (optional) page_info: metadata about pages covered.
     """
+
     soup = BeautifulSoup(html, "lxml")
     chapter = {}
 
     title_tag = soup.find("title")
     chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
     chapter["title"] = chapter_title
-    logging.info(f"Chapter title: {chapter_title}")
     if page_info:
         chapter["page_info"] = page_info
 
-    # Parse rubrics: try nested <dir> tags; fallback to <p> tags.
+    rubrics = []
     if soup.find("dir"):
         rubrics = parse_directory(soup.find("dir"))
-        logging.debug(f"Parsed {len(rubrics)} rubrics using nested <dir>.")
     else:
-        rubrics = []
         paragraphs = soup.find_all("p")
         current_rubric = None
         for p in paragraphs:
@@ -57,24 +54,22 @@ def parse_chapter(html, page_info=None):
             if ":" in raw:
                 header_raw, remedy_raw = raw.split(":", 1)
                 header = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
+                header = header.replace(":", "").strip()
                 description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
+                description = description.replace(":", "").strip()
                 remedies = parse_remedy_list(remedy_raw)
-                current_rubric = {
-                    "title": header.strip(),
-                    "description": description.strip(),
-                    "remedies": remedies,
-                    "subrubrics": [],
-                }
-            else:
-                header = BeautifulSoup(raw, "lxml").get_text(strip=True)
-                current_rubric = {"title": header.strip(), "description": "", "remedies": [], "subrubrics": []}
-            if current_rubric:
+                current_rubric = {"title": header, "description": description, "remedies": remedies, "subrubrics": []}
                 rubrics.append(current_rubric)
-        logging.debug(f"Parsed {len(rubrics)} rubrics using <p> tags.")
-
-    # Group rubrics into page boundaries using subject markers like "MIND p. 1".
+            else:
+                text = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
+                text = text.replace(":", "").strip()
+                if current_rubric:
+                    current_rubric["description"] += " " + text
+                else:
+                    current_rubric = {"title": text, "description": "", "remedies": [], "subrubrics": []}
+                    rubrics.append(current_rubric)
+    # Group rubrics into pages.
     pages = group_by_page(rubrics, subject_keyword="MIND")
-    logging.info(f"Grouped rubrics into {len(pages)} pages.")
     chapter["pages"] = pages
     chapter["subject"] = "MIND"
     return chapter
