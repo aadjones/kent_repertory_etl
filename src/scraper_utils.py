@@ -3,7 +3,7 @@ import os
 import re
 
 import requests
-from bs4 import Tag
+from bs4 import BeautifulSoup, Tag
 
 
 def fetch_html(url):
@@ -26,8 +26,10 @@ def load_local_html(filepath):
 
 def is_decorative(text):
     """
-    Return True if the text consists only of hyphens (and whitespace)
-    or looks like a decorative separator (e.g., contains ">>>>").
+    Return True if the text is considered decorative.
+    This includes text that consists solely of hyphens and whitespace,
+    text that contains arrow markers (e.g., ">>>>"), or that matches
+    a pattern of only hyphens and '>' characters.
     """
     stripped = text.strip()
     if not stripped:
@@ -35,6 +37,9 @@ def is_decorative(text):
     if all(char in "- " for char in stripped):
         return True
     if ">>>" in stripped:
+        return True
+    # Additional check: if the text is entirely made up of hyphens and arrows.
+    if re.match(r"^[->]+$", stripped):
         return True
     return False
 
@@ -63,6 +68,9 @@ def merge_duplicate_rubrics(rubrics):
 
     Merging is done by concatenating descriptions (with a space),
     extending remedy lists, and merging subrubrics.
+
+    For remedy lists (lists of dictionaries), deduplicate them using
+    each remedy's (name, grade) as a key.
     """
     merged = {}
     order = []
@@ -78,7 +86,14 @@ def merge_duplicate_rubrics(rubrics):
             order.append(key)
     for key in merged:
         merged[key]["description"] = merged[key]["description"].strip()
-        merged[key]["remedies"] = list(dict.fromkeys(merged[key]["remedies"]))
+        unique_remedies = []
+        seen = set()
+        for remedy in merged[key]["remedies"]:
+            remedy_key = (remedy.get("name"), remedy.get("grade"))
+            if remedy_key not in seen:
+                seen.add(remedy_key)
+                unique_remedies.append(remedy)
+        merged[key]["remedies"] = unique_remedies
     return [merged[k] for k in order]
 
 
@@ -90,7 +105,7 @@ def group_by_page(rubrics, subject_keyword="MIND"):
     (e.g., "MIND p. 1", "MIND p. 2", etc.) marks the start of a new page.
     That boundary rubric is used solely as a marker and is not added
     to the page's rubric list. Also, if a rubric’s normalized title equals
-    the subject keyword (e.g. "MIND") with no page marker, we skip it.
+    the subject keyword (e.g., "MIND") with no page marker, we skip it.
 
     Returns a list of dictionaries, each with keys:
       - page: the page marker (e.g., "P1")
@@ -98,21 +113,18 @@ def group_by_page(rubrics, subject_keyword="MIND"):
     """
     groups = []
     current_group = None
-    # Regex to detect boundaries such as "MIND p. 1" (captures the number).
     page_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
 
     for rub in rubrics:
         title = rub.get("title", "")
         match = page_pattern.match(title)
         if match:
-            # This rubric is a boundary marker.
             page_num = match.group(1)
             if current_group is None or current_group["page"] != f"P{page_num}":
                 current_group = {"page": f"P{page_num}", "rubrics": []}
                 groups.append(current_group)
-            # Do not add the boundary rubric itself.
+            # Boundary rubric is used only as a marker; do not add.
         else:
-            # If normalized title equals subject keyword ("MIND"), skip it.
             if normalize_subject_title(title).upper() == subject_keyword.upper():
                 continue
             if current_group is None:
@@ -123,6 +135,48 @@ def group_by_page(rubrics, subject_keyword="MIND"):
     return groups
 
 
+def parse_remedy(remedy_snippet):
+    """
+    Given a remedy snippet (a string of HTML or plain text), return a dictionary
+    with keys:
+      - name: remedy name (plaintext)
+      - grade: an integer indicating formatting:
+               plaintext = 1, italic (blue) = 2, bold (red) = 3.
+
+    We wrap the snippet in a <div> so BeautifulSoup can parse it properly.
+    Bold remedies are identified by a <font> tag with color "#ff0000",
+    italic remedies by a <font> tag with color "#0000ff". Bold takes precedence.
+    """
+    wrapped = f"<div>{remedy_snippet}</div>"
+    frag = BeautifulSoup(wrapped, "lxml")
+    grade = 1
+    for font in frag.find_all("font"):
+        color = font.get("color", "").lower()
+        if color == "#ff0000":
+            grade = 3
+            break
+        elif color == "#0000ff":
+            grade = max(grade, 2)
+    if grade == 1:
+        if frag.find("b"):
+            grade = 3
+        elif frag.find("i"):
+            grade = 2
+    name = frag.get_text(strip=True)
+    return {"name": name, "grade": grade}
+
+
+def parse_remedy_list(remedy_html):
+    """
+    Given a remedy section as HTML (the part after the colon),
+    split it by commas and parse each remedy snippet.
+    Returns a list of remedy dictionaries.
+    """
+    remedy_parts = remedy_html.split(",")
+    remedies = [parse_remedy(part) for part in remedy_parts if part.strip()]
+    return remedies
+
+
 def parse_directory(tag, level=0):
     """
     Recursively parse a <dir> tag to extract rubrics in a hierarchical structure.
@@ -130,37 +184,57 @@ def parse_directory(tag, level=0):
     Each rubric is represented as a dictionary with:
       - title: text of the rubric (with parentheses removed)
       - description: text following a colon if present
-      - remedies: list of remedy abbreviations (if present)
+      - remedies: list of remedy dictionaries (if present)
       - subrubrics: list of child rubrics (parsed recursively)
 
     Decorative paragraphs (e.g., "----------" or ">>>>") are skipped.
+    For <p> tags that do not contain a <b> tag, if there is an existing current rubric,
+    the text is appended to its description.
     """
     rubrics = []
+    current_rubric = None
     for child in tag.children:
         if isinstance(child, Tag):
             if child.name == "p":
-                text = child.get_text(" ", strip=True)
-                if is_decorative(text):
+                raw = child.decode_contents()
+                if is_decorative(raw):
                     continue
-                text = remove_parentheses(text)
-                rubric = {"title": "", "description": "", "remedies": [], "subrubrics": []}
-                if ":" in text:
-                    header, remedy_text = text.split(":", 1)
-                    rubric["title"] = header.strip()
-                    rubric["description"] = remedy_text.strip()
-                    remedies = [r.strip() for r in remedy_text.split(",") if r.strip()]
-                    rubric["remedies"] = remedies
+                # Check if this <p> contains a bold tag; if so, it's a new rubric header.
+                if child.find("b"):
+                    if current_rubric:
+                        rubrics.append(current_rubric)
+                    if ":" in raw:
+                        header_raw, remedy_raw = raw.split(":", 1)
+                        header = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
+                        description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
+                        remedies = parse_remedy_list(remedy_raw)
+                        current_rubric = {
+                            "title": header,
+                            "description": description,
+                            "remedies": remedies,
+                            "subrubrics": [],
+                        }
+                    else:
+                        header = BeautifulSoup(raw, "lxml").get_text(strip=True)
+                        current_rubric = {"title": header, "description": "", "remedies": [], "subrubrics": []}
                 else:
-                    rubric["title"] = text.strip()
-                rubrics.append(rubric)
+                    # If this <p> is not bold, then append its text to the current rubric's description
+                    # (if a current rubric exists); otherwise, treat it as a new rubric.
+                    additional = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
+                    if current_rubric:
+                        current_rubric["description"] += " " + additional
+                    else:
+                        current_rubric = {"title": additional, "description": "", "remedies": [], "subrubrics": []}
             elif child.name == "dir":
                 subrubrics = parse_directory(child, level + 1)
-                if rubrics:
-                    rubrics[-1]["subrubrics"].extend(subrubrics)
+                if current_rubric:
+                    current_rubric["subrubrics"].extend(subrubrics)
                 else:
                     rubrics.extend(subrubrics)
             else:
                 continue
+    if current_rubric:
+        rubrics.append(current_rubric)
     return rubrics
 
 
@@ -184,11 +258,8 @@ def save_chapter(chapter, output_dir="data/processed"):
     """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
-
     filename = f"chapter_{clean_filename(chapter.get('title', 'chapter'))}.json"
     output_path = os.path.join(output_dir, filename)
-
     with open(output_path, "w", encoding="utf-8") as outfile:
         json.dump(chapter, outfile, indent=2, ensure_ascii=False)
-
     print(f"Chapter saved to {output_path}")

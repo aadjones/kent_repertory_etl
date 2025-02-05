@@ -9,7 +9,7 @@ from scraper_utils import (
     is_decorative,
     load_local_html,
     parse_directory,
-    remove_parentheses,
+    parse_remedy_list,
     save_chapter,
 )
 
@@ -37,7 +37,7 @@ def parse_chapter(html, page_info=None):
     if page_info:
         chapter["page_info"] = page_info
 
-    # Parse rubrics: try using nested <dir> tags first; fallback to <p> tags.
+    # Parse rubrics: try nested <dir> tags first; fallback to <p> tags.
     if soup.find("dir"):
         rubrics = parse_directory(soup.find("dir"))
     else:
@@ -45,31 +45,26 @@ def parse_chapter(html, page_info=None):
         paragraphs = soup.find_all("p")
         current_rubric = None
         for p in paragraphs:
-            text = p.get_text(" ", strip=True)
-            if is_decorative(text):
+            raw = p.decode_contents()
+            if is_decorative(raw):
                 continue
-            text = remove_parentheses(text)
-            if p.find("b"):
-                if current_rubric:
-                    rubrics.append(current_rubric)
-                if ":" in text:
-                    header, remedy_text = text.split(":", 1)
-                else:
-                    header = text
-                    remedy_text = ""
+            if ":" in raw:
+                header_raw, remedy_raw = raw.split(":", 1)
+                header = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
+                description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
+                remedies = parse_remedy_list(remedy_raw)
                 current_rubric = {
                     "title": header.strip(),
-                    "description": remedy_text.strip(),
-                    "remedies": [r.strip() for r in remedy_text.split(",") if r.strip()],
+                    "description": description.strip(),
+                    "remedies": remedies,
                     "subrubrics": [],
                 }
             else:
-                if current_rubric:
-                    current_rubric["description"] += " " + text
-        if current_rubric:
-            rubrics.append(current_rubric)
-
-    # Group the rubrics into page boundaries based on subject markers like "MIND p. 1"
+                header = BeautifulSoup(raw, "lxml").get_text(strip=True)
+                current_rubric = {"title": header.strip(), "description": "", "remedies": [], "subrubrics": []}
+            if current_rubric:
+                rubrics.append(current_rubric)
+    # Group rubrics into page boundaries using subject markers like "MIND p. 1".
     pages = group_by_page(rubrics, subject_keyword="MIND")
     chapter["pages"] = pages
     chapter["subject"] = "MIND"
