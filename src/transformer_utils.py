@@ -5,7 +5,7 @@ def transform_content(rubrics):
       - Remove "description" entirely
       - Preserve the "remedies" list
       - Recursively process nested rubrics, renaming the key for nested items to "subcontent"
-      
+
     Returns a new list of dictionaries in the final schema.
     """
     transformed = []

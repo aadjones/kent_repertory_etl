@@ -269,3 +269,53 @@ def save_chapter(chapter, output_dir="data/processed"):
     with open(output_path, "w", encoding="utf-8") as outfile:
         json.dump(chapter, outfile, indent=2, ensure_ascii=False)
     logger.info(f"Chapter saved to {output_path}")
+
+
+def extract_section(rubrics):
+    """
+    Scan the list of parsed rubrics for a section boundary.
+    Look for the first rubric whose title matches the pattern
+       <Section Name> p. <number>
+    and return the section portion (uppercased). If none is found, return "UNKNOWN".
+    """
+    # Pattern: capture any text (non-greedy) before "p." followed by a number.
+    pattern = re.compile(r"^(?!KENT\b)(.*?)\s*p\.?\s*\d+", re.IGNORECASE)
+    for rub in rubrics:
+        title = rub.get("title", "").strip()
+        if title.upper() == "KENT":
+            continue
+        m = pattern.match(title)
+        if m:
+            section = m.group(1).strip()
+            if section:
+                return section.upper()
+    return "UNKNOWN"
+
+
+def extract_section_from_raw(html):
+    """
+    Scan the raw HTML for a section boundary pattern.
+    First, extract all visible text from the HTML, then search for strings like
+    "MIND p. 1" or "VERTIGO p. 96" and return the text before the page marker (uppercased).
+    Filters out any match that is "KENT" or shorter than 3 characters.
+    """
+    import re
+
+    from bs4 import BeautifulSoup
+
+    # Extract all visible text from the HTML.
+    text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
+    # Debug: print the extracted text if needed.
+    # print("DEBUG: Extracted text:", text)
+
+    # Pattern: one or more uppercase letters (possibly with spaces) followed by "p." and digits.
+    pattern = re.compile(r"([A-Z]+(?:\s+[A-Z]+)*)\s*p\.?\s*\d+", re.IGNORECASE)
+    matches = pattern.findall(text)
+    print("DEBUG: Matches found:", matches)  # Temporary debug output
+    for m in matches:
+        section = m.strip().upper()
+        # Filter out matches that are too short or equal to "KENT".
+        if len(section) < 3 or section == "KENT":
+            continue
+        return section
+    return None
