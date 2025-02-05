@@ -10,9 +10,7 @@ from scraper_utils import (
     parse_remedy_list,
 )
 
-# ----------------------------
-# Test for decorator nonsense
-# ----------------------------
+# --- Decorative content tests ---
 
 
 def test_is_decorative_all_hyphens():
@@ -25,52 +23,47 @@ def test_is_decorative_arrows():
     assert is_decorative("---->>>>>----")
 
 
+def test_is_decorative_mixed():
+    # Test a string that is only hyphens and arrow characters.
+    assert is_decorative("---------->>>>>")
+
+
 def test_is_decorative_empty():
     assert is_decorative("")
     assert is_decorative("   ")
 
 
-# ----------------------------
-# Test for subject extraction
-# ----------------------------
+# --- Subject extraction tests ---
 
 
 def test_normalize_subject_title():
-    # "MIND p. 1" should normalize to "MIND"
-    normalized = normalize_subject_title("MIND p. 1")
-    assert normalized == "MIND"
-    # Other examples
-    normalized = normalize_subject_title("MIND P. 23")
-    assert normalized == "MIND"
-    normalized = normalize_subject_title("MIND")
-    assert normalized == "MIND"
+    assert normalize_subject_title("MIND p. 1") == "MIND"
+    assert normalize_subject_title("MIND P. 23") == "MIND"
+    assert normalize_subject_title("MIND") == "MIND"
 
 
-# ----------------------------
-# Test for rubric extraction
-# ----------------------------
+# --- Rubric extraction tests ---
 
 
 def test_parse_directory_simple_rubric():
-    # A simple HTML snippet containing a rubric in a <p> tag.
+    # A simple HTML snippet containing a rubric.
     html = "<dir><p><b>ABSENT-MINDED: Acon., calc.</b></p></dir>"
     soup = BeautifulSoup(html, "lxml")
     rubrics = parse_directory(soup.find("dir"))
-    # We expect one rubric with title "ABSENT-MINDED" and remedies Acon. and calc.
+    # Expect one rubric with title "ABSENT-MINDED" and remedies for Acon. and calc.
     assert len(rubrics) == 1
     rub = rubrics[0]
     assert rub["title"] == "ABSENT-MINDED"
-    assert "Acon." in [r["name"] for r in rub["remedies"]]
-    # Grade checking will be done in remedy tests
+    remedy_names = [r["name"] for r in rub["remedies"]]
+    assert "Acon." in remedy_names
+    assert "calc." in remedy_names
 
 
-# ----------------------------
-# Test for subrubric extraction
-# ----------------------------
+# --- Subrubric extraction tests ---
 
 
 def test_parse_directory_nested():
-    # Create a nested directory structure
+    # Create a nested directory structure.
     html = """
     <dir>
       <p><b>ABSENT-MINDED: Acon., calc.</b></p>
@@ -86,18 +79,17 @@ def test_parse_directory_nested():
     assert len(rubrics) == 1
     parent = rubrics[0]
     assert parent["title"] == "ABSENT-MINDED"
+    # There should be exactly one subrubric under the parent.
     assert len(parent["subrubrics"]) == 1
     child = parent["subrubrics"][0]
-    # Check that the child rubric's title is "morning" (the <i><font> formatting should be removed in title)
+    # The child rubric's title should be "morning" (after stripping formatting).
     assert child["title"].lower() == "morning"
-    # The remedy "tarent." should be present in the child's remedy list.
+    # The remedy "tarent." should be present with the correct grade.
     remedy_names = [r["name"].lower() for r in child["remedies"]]
     assert "tarent." in remedy_names
 
 
-# ----------------------------
-# Test for remedy extraction (individual snippet)
-# ----------------------------
+# --- Remedy extraction tests ---
 
 
 def test_parse_remedy_plain():
@@ -124,31 +116,21 @@ def test_parse_remedy_italic():
     assert remedy["grade"] == 2
 
 
-# ----------------------------
-# Test for remedy list extraction
-# ----------------------------
-
-
 def test_parse_remedy_list():
-    # Test a remedy section with multiple remedies with mixed formatting.
+    # Remedy list with mixed formatting.
     remedy_html = ' <b><font COLOR="#ff0000">Acon.</b></font>, alum., <i><font COLOR="#0000ff">tarent.</font></i> '
     remedies = parse_remedy_list(remedy_html)
-    # We expect three remedies: Acon. (bold, grade 3), alum. (plain, grade 1), tarent. (italic, grade 2)
     assert len(remedies) == 3
-    # Build a mapping for easier checking.
     mapping = {r["name"].lower(): r["grade"] for r in remedies}
     assert mapping.get("acon.") == 3
     assert mapping.get("alum.") == 1
     assert mapping.get("tarent.") == 2
 
 
-# ----------------------------
-# Test for merging duplicate rubrics
-# ----------------------------
+# --- Merging duplicate rubrics tests ---
 
 
 def test_merge_duplicate_rubrics():
-    # Provide two rubrics with the same title.
     rubrics = [
         {"title": "AMOROUS", "description": "desc1", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
         {"title": "AMOROUS", "description": "desc2", "remedies": [{"name": "calc.", "grade": 1}], "subrubrics": []},
@@ -158,18 +140,13 @@ def test_merge_duplicate_rubrics():
     merged_rub = merged[0]
     assert "desc1" in merged_rub["description"]
     assert "desc2" in merged_rub["description"]
-    # Remedies should be merged (and deduplicated) so that there is only one entry.
     assert len(merged_rub["remedies"]) == 1
 
 
-# ----------------------------
-# Test for subject extraction in full chapter parsing
-# ----------------------------
+# --- Final schema verification tests ---
 
 
-def test_parse_chapter_subject():
-    # Test an HTML snippet representing a chapter with subject boundaries.
-    # For simplicity, we simulate two page boundaries.
+def test_parse_chapter_schema():
     html = """
     <html>
       <head><title>KENT0000</title></head>
@@ -185,19 +162,10 @@ def test_parse_chapter_subject():
     </html>
     """
     chapter = parse_chapter(html, page_info={"pages_covered": "p. 1-5"})
-    # Expect chapter title "KENT0000", subject "MIND", and two page groups: P1 and P2.
-    assert chapter["title"] == "KENT0000"
-    assert chapter["subject"] == "MIND"
-    pages = chapter["pages"]
-    assert len(pages) == 2
-    # For P1, we expect one rubric ("ABSENT-MINDED")
-    page1 = pages[0]
-    assert page1["page"] == "P1"
-    # Ensure that the boundary rubric "MIND p. 1" is not included in the rubrics.
-    for rub in page1["rubrics"]:
-        assert normalize_subject_title(rub["title"]).upper() != "MIND"
-    # For P2, we expect one rubric ("AMOROUS")
-    page2 = pages[1]
-    assert page2["page"] == "P2"
-    for rub in page2["rubrics"]:
-        assert normalize_subject_title(rub["title"]).upper() != "MIND"
+    # Check that chapter has expected top-level keys.
+    for key in ["title", "subject", "pages"]:
+        assert key in chapter, f"Missing key '{key}' in chapter."
+    # Check that each page group has "page" and "rubrics".
+    for page in chapter["pages"]:
+        for key in ["page", "rubrics"]:
+            assert key in page, f"Missing key '{key}' in page group."

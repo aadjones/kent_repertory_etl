@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 
@@ -12,6 +13,9 @@ from scraper_utils import (
     parse_remedy_list,
     save_chapter,
 )
+
+# Configure the root logger.
+logging.basicConfig(level=logging.DEBUG, format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 
 def parse_chapter(html, page_info=None):
@@ -34,12 +38,14 @@ def parse_chapter(html, page_info=None):
     title_tag = soup.find("title")
     chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
     chapter["title"] = chapter_title
+    logging.info(f"Chapter title: {chapter_title}")
     if page_info:
         chapter["page_info"] = page_info
 
-    # Parse rubrics: try nested <dir> tags first; fallback to <p> tags.
+    # Parse rubrics: try nested <dir> tags; fallback to <p> tags.
     if soup.find("dir"):
         rubrics = parse_directory(soup.find("dir"))
+        logging.debug(f"Parsed {len(rubrics)} rubrics using nested <dir>.")
     else:
         rubrics = []
         paragraphs = soup.find_all("p")
@@ -64,8 +70,11 @@ def parse_chapter(html, page_info=None):
                 current_rubric = {"title": header.strip(), "description": "", "remedies": [], "subrubrics": []}
             if current_rubric:
                 rubrics.append(current_rubric)
+        logging.debug(f"Parsed {len(rubrics)} rubrics using <p> tags.")
+
     # Group rubrics into page boundaries using subject markers like "MIND p. 1".
     pages = group_by_page(rubrics, subject_keyword="MIND")
+    logging.info(f"Grouped rubrics into {len(pages)} pages.")
     chapter["pages"] = pages
     chapter["subject"] = "MIND"
     return chapter
@@ -83,15 +92,15 @@ def main():
     """
     if len(sys.argv) > 1:
         url = sys.argv[1]
-        print(f"Fetching HTML from URL: {url}")
+        logging.info(f"Fetching HTML from URL: {url}")
         try:
             html_content = fetch_html(url)
         except Exception as e:
-            print(f"Error fetching the page: {e}")
+            logging.error(f"Error fetching the page: {e}")
             sys.exit(1)
     else:
         local_path = os.path.join("data", "raw", "kent0000_P1.html")
-        print(f"No URL provided. Using local file: {local_path}")
+        logging.info(f"No URL provided. Using local file: {local_path}")
         html_content = load_local_html(local_path)
 
     page_info = {"pages_covered": "p. 1-5"}
