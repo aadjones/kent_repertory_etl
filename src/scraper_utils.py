@@ -6,48 +6,39 @@ import re
 import requests
 from bs4 import BeautifulSoup, Tag
 
-# Configure logging for this module.
+from transformer_utils import prune_empty_keys
+
+logging.basicConfig(
+    level=logging.DEBUG,  # For detailed logging
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 
 def fetch_html(url):
-    """
-    Fetch the HTML content from the given URL.
-    Raises an HTTPError if the request fails.
-    """
     logger.info(f"Fetching HTML from URL: {url}")
     response = requests.get(url)
     response.raise_for_status()
-    logger.debug("HTML fetched successfully.")
     return response.text
 
 
 def load_local_html(filepath):
-    """
-    Load the local HTML file from the given filepath.
-    """
     logger.info(f"Loading local HTML file: {filepath}")
     with open(filepath, "r", encoding="windows-1252") as file:
-        content = file.read()
-    logger.debug("Local HTML loaded successfully.")
-    return content
+        return file.read()
+
+
+def load_and_normalize_html(filepath):
+    """Load and normalize HTML using html5lib."""
+    with open(filepath, "r", encoding="windows-1252") as file:
+        raw_html = file.read()
+    soup = BeautifulSoup(raw_html, "html5lib")
+    return str(soup)
 
 
 def is_decorative(text):
-    """
-    Return True if the text is considered decorative.
-    Decorative text is usually just hyphens or arrow markers.
-    However, if the text contains a page boundary marker (e.g. "p. 1")
-    or a section marker (e.g. "MIND p. 1"), then it is NOT decorative.
-    """
     stripped = text.strip()
-    # If the text matches a page-boundary pattern, then it's not decorative.
-    import re
-
-    if re.search(r"\bp\.?\s*\d+", stripped, re.IGNORECASE):
-        return False
-    # Otherwise, consider it decorative if it's empty or made only of hyphens and spaces.
     if not stripped:
         return True
     if all(char in "- " for char in stripped):
@@ -60,45 +51,59 @@ def is_decorative(text):
 
 
 def remove_parentheses(text):
-    """
-    Remove any content inside parentheses (and the parentheses themselves).
-    """
     return re.sub(r"\([^)]*\)", "", text)
 
 
 def normalize_subject_title(title):
-    """
-    Normalize a subject title by removing any page markers like "p. 1".
-    For example, "MIND p. 1" becomes "MIND".
-    """
     normalized = re.sub(r"\s*p\.?\s*\d+", "", title, flags=re.IGNORECASE)
     return normalized.strip()
 
 
+def extract_related_rubrics(header):
+    """
+    Extracts the content inside parentheses from the header, removes HTML tags, strips
+    any leading "See", and returns a list of related rubric names.
+    """
+    match = re.search(r"\(([^)]*)\)", header)
+    if match:
+        # Get the raw content inside the parentheses.
+        raw_content = match.group(1).strip()
+        # Use BeautifulSoup to remove any HTML tags.
+        cleaned_text = BeautifulSoup(raw_content, "lxml").get_text(strip=True)
+        # Remove a leading "See" if present.
+        if cleaned_text.lower().startswith("see"):
+            cleaned_text = cleaned_text[3:].strip()
+        # Split on commas (if multiple related rubrics are provided).
+        related = [x.strip() for x in cleaned_text.split(",") if x.strip()]
+        return related
+    return []
+
+
+def clean_header(header):
+    cleaned = re.sub(r"\s*\([^)]*\)", "", header)
+    return cleaned.strip()
+
+
 def merge_duplicate_rubrics(rubrics):
-    """
-    Merge rubrics with the same title.
-    Merging is done by extending remedy lists and merging subrubrics.
-    For remedy lists (lists of dictionaries), deduplicate using each remedy's (name, grade).
-    This version ignores descriptions completely.
-    """
     merged = {}
     order = []
     for rub in rubrics:
+        rub.setdefault("description", "")
+        rub.setdefault("remedies", [])
+        rub.setdefault("subrubrics", [])
+        rub.setdefault("related_rubrics", [])
         title = rub.get("title", "").strip()
         key = title.lower()
         if key in merged:
-            # Extend remedy lists and subrubrics.
+            merged[key]["description"] += " " + rub.get("description", "")
             merged[key]["remedies"].extend(rub.get("remedies", []))
             merged[key]["subrubrics"].extend(rub.get("subrubrics", []))
+            merged[key]["related_rubrics"].extend(rub.get("related_rubrics", []))
         else:
-            # Copy the rubric; if it has a description, ignore it in the final merged output.
-            new_rub = rub.copy()
-            new_rub.pop("description", None)
-            merged[key] = new_rub
+            merged[key] = rub.copy()
             order.append(key)
-    # Deduplicate remedies using (name, grade)
     for key in merged:
+        merged[key]["description"] = merged[key]["description"].strip()
         unique_remedies = []
         seen = set()
         for remedy in merged[key]["remedies"]:
@@ -107,67 +112,153 @@ def merge_duplicate_rubrics(rubrics):
                 seen.add(remedy_key)
                 unique_remedies.append(remedy)
         merged[key]["remedies"] = unique_remedies
+        # Deduplicate related_rubrics preserving order.
+        unique_related = []
+        seen_related = set()
+        for rel in merged[key]["related_rubrics"]:
+            if rel not in seen_related:
+                seen_related.add(rel)
+                unique_related.append(rel)
+        merged[key]["related_rubrics"] = unique_related
+    logger.debug(f"Merged rubrics: {merged}")
     return [merged[k] for k in order]
 
 
-def group_by_page(rubrics, subject_keyword=None):
+def parse_directory(tag, level=0):
     """
-    Group a list of rubric dictionaries into pages based on boundary markers.
+    Recursively parse a <dir> tag to extract rubrics in a hierarchical structure.
 
-    A boundary marker is any rubric whose title contains a page marker, e.g.
-    "MIND p. 100" or "VERTIGO p. 96". If subject_keyword is provided, the boundary
-    must start with that keyword; otherwise, we match any boundary marker.
+    Each rubric is represented as a dictionary with keys:
+      - title: Cleaned rubric title (parenthesized content removed)
+      - related_rubrics: List of strings extracted from any parentheses in the header.
+      - description: Text following a colon (if present), else empty.
+      - remedies: List of remedy dictionaries.
+      - subrubrics: List of child rubrics.
 
-    We assume that each HTML file is expected to cover exactly 5 pages.
-
-    The function iterates over the rubrics in order. When a rubric's title matches
-    the boundary pattern, a new page group is started (using the number captured).
-    Otherwise, rubrics are added to the current page.
-
-    Returns a list of page groups. Each page group is a dictionary:
-      { "page": "P<number>", "rubrics": [ list of rubric dictionaries ] }
+    A <p> is treated as a rubric header if it contains a colon, a <b> element,
+    or if it contains parentheses (triggering extraction of related rubrics).
+    Decorative entries (e.g. "---------->>>>>") are skipped.
     """
-    import re
+    rubrics = []
+    current_rubric = None
 
-    pages = []
-    current_page = None
+    for child in tag.children:
+        if isinstance(child, Tag):
+            if child.name == "p":
+                raw = child.decode_contents()
+                if is_decorative(raw):
+                    logger.debug("Skipping decorative content.")
+                    continue
 
-    if subject_keyword:
-        # Pattern with one capturing group: the page number.
-        boundary_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
-    else:
-        # Pattern with two capturing groups: group(1) is section, group(2) is page number.
-        boundary_pattern = re.compile(r"^(.*?)\s*p\.?\s*(\d+)", re.IGNORECASE)
+                logger.debug(f"Processing raw <p> content: {raw}")
 
-    for rub in rubrics:
-        title = rub.get("title", "").strip()
-        m = boundary_pattern.match(title)
-        if m:
-            # If subject_keyword is provided, the page number is in group(1); otherwise in group(2).
-            if subject_keyword:
-                page_num = m.group(1).strip()
+                # NEW: Use colon check in addition to <b> tag and parentheses.
+                if ":" in raw or child.find("b") or (len(extract_related_rubrics(raw)) > 0):
+                    # Finish the previous rubric if any.
+                    if current_rubric:
+                        if not is_decorative(current_rubric["title"]):
+                            rubrics.append(current_rubric)
+                        current_rubric = None
+
+                    if ":" in raw:
+                        header_raw, remedy_raw = raw.split(":", 1)
+                        # Extract related rubrics from header_raw before cleaning.
+                        related = extract_related_rubrics(header_raw)
+                        header_text = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
+                        header_clean = clean_header(header_text)
+                        if is_decorative(header_clean):
+                            logger.debug(f"Header '{header_clean}' is decorative; skipping.")
+                            current_rubric = None
+                            continue
+                        description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
+                        remedies = parse_remedy_list(remedy_raw)
+                        current_rubric = {
+                            "title": header_clean,
+                            "related_rubrics": related,
+                            "remedies": remedies,
+                            "description": description,
+                            "subrubrics": [],
+                        }
+                    else:
+                        header_text = BeautifulSoup(raw, "lxml").get_text(strip=True)
+                        header_clean = clean_header(header_text)
+                        if is_decorative(header_clean):
+                            logger.debug(f"Header '{header_clean}' is decorative; skipping.")
+                            current_rubric = None
+                            continue
+                        related = extract_related_rubrics(raw)
+                        current_rubric = {
+                            "title": header_clean,
+                            "related_rubrics": related,
+                            "remedies": [],
+                            "description": "",
+                            "subrubrics": [],
+                        }
+                    logger.debug(f"Created rubric: title='{current_rubric['title']}'")
+                    logger.debug(f"related_rubrics={current_rubric['related_rubrics']}")
+                else:
+                    # No colon and no header indicator; treat this <p> as additional detail.
+                    additional = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
+                    if additional and not is_decorative(additional):
+                        if current_rubric:
+                            current_rubric["description"] += " " + additional
+                        else:
+                            current_rubric = {
+                                "title": additional,
+                                "related_rubrics": [],
+                                "remedies": [],
+                                "description": "",
+                                "subrubrics": [],
+                            }
+            elif child.name == "dir":
+                subrubrics = parse_directory(child, level + 1)
+                if current_rubric:
+                    current_rubric["subrubrics"].extend(subrubrics)
+                else:
+                    rubrics.extend(subrubrics)
             else:
-                page_num = m.group(2).strip()
-            # Start a new page group.
-            current_page = {"page": f"P{page_num}", "rubrics": []}
-            pages.append(current_page)
+                continue
+
+    if current_rubric and not is_decorative(current_rubric["title"]):
+        rubrics.append(current_rubric)
+    return rubrics
+
+
+def group_by_page(rubrics, subject_keyword="MIND"):
+    """
+    Group a flat list of rubric dictionaries into page groups based on boundaries.
+    A rubric with title matching "MIND p. X" starts a new page.
+    If no page boundaries are found, create a default page "P1".
+    The resulting page dictionary will have keys:
+      - page: the page marker (e.g., "P1")
+      - content: the list of merged rubrics.
+    """
+    groups = []
+    current_group = None
+    page_pattern = re.compile(rf"^{subject_keyword}\s*p\.?\s*(\d+)", re.IGNORECASE)
+    for rub in rubrics:
+        title = rub.get("title", "")
+        match = page_pattern.match(title)
+        if match:
+            page_num = match.group(1)
+            current_group = {"page": f"P{page_num}", "rubrics": []}
+            groups.append(current_group)
         else:
-            if current_page is None:
-                # If no boundary has been encountered yet, start a default group "P1".
-                current_page = {"page": "P1", "rubrics": []}
-                pages.append(current_page)
-            current_page["rubrics"].append(rub)
-    return pages
+            if normalize_subject_title(title).upper() == subject_keyword.upper():
+                continue
+            if current_group is None:
+                current_group = {"page": "P1", "rubrics": []}
+                groups.append(current_group)
+            current_group["rubrics"].append(rub)
+    # Rename the key "rubrics" to "content" after merging duplicates.
+    for group in groups:
+        group["content"] = merge_duplicate_rubrics(group["rubrics"])
+        del group["rubrics"]
+    logger.info(f"Grouped into pages: {[g['page'] for g in groups]}")
+    return groups
 
 
 def parse_remedy(remedy_snippet):
-    """
-    Parse a remedy snippet and return a dictionary with:
-      - name: remedy name (plaintext)
-      - grade: formatting grade (1 = plaintext, 2 = italic (blue), 3 = bold (red)).
-
-    Wrap the snippet in a <div> so that BeautifulSoup can reliably parse the formatting.
-    """
     wrapped = f"<div>{remedy_snippet}</div>"
     frag = BeautifulSoup(wrapped, "lxml")
     grade = 1
@@ -189,82 +280,12 @@ def parse_remedy(remedy_snippet):
 
 
 def parse_remedy_list(remedy_html):
-    """
-    Given a remedy section as HTML (text after the colon), split by commas and parse each remedy.
-    Returns a list of remedy dictionaries.
-    """
     remedy_parts = remedy_html.split(",")
     remedies = [parse_remedy(part) for part in remedy_parts if part.strip()]
     return remedies
 
 
-def parse_directory(tag, level=0):
-    """
-    Recursively parse a <dir> tag to extract rubrics and subrubrics.
-
-    For each <p> tag, if a colon is present in its raw HTML content, split on the first colon.
-    The left-hand side is used as the rubric title and the right-hand side is interpreted
-    as the remedy section. Any colon characters are then removed.
-
-    If no colon is present, then treat the paragraph as additional detail to be appended
-    to the description of the current rubric.
-
-    Returns a list of rubric dictionaries, each with keys:
-      - title: (colon-free)
-      - description: additional details (colon-free)
-      - remedies: list of remedy dictionaries (parsed from the remedy section, if any)
-      - subrubrics: list of nested rubric dictionaries (if any)
-    """
-    rubrics = []
-    current_rubric = None
-    for child in tag.children:
-        if not isinstance(child, Tag):
-            continue
-        if child.name == "p":
-            raw = child.decode_contents()
-            if is_decorative(raw):
-                continue
-            # If a colon is present anywhere in the raw HTML, split on the first colon.
-            if ":" in raw:
-                header_raw, remedy_raw = raw.split(":", 1)
-                header = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
-                header = header.replace(":", "").strip()
-                # Parse remedy part:
-                description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
-                description = description.replace(":", "").strip()
-                remedies = parse_remedy_list(remedy_raw)
-                # Create a new rubric from the split result.
-                rubric = {"title": header, "description": description, "remedies": remedies, "subrubrics": []}
-                current_rubric = rubric
-                rubrics.append(rubric)
-            else:
-                # No colon: treat this as additional information.
-                text = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
-                text = text.replace(":", "").strip()
-                if current_rubric:
-                    # Append to the description.
-                    current_rubric["description"] += " " + text
-                else:
-                    # If no rubric exists, create one with this text as the title.
-                    current_rubric = {"title": text, "description": "", "remedies": [], "subrubrics": []}
-                    rubrics.append(current_rubric)
-        elif child.name == "dir":
-            # Recursively process nested <dir> tags.
-            subrubrics = parse_directory(child, level + 1)
-            if current_rubric:
-                current_rubric["subrubrics"].extend(subrubrics)
-            else:
-                rubrics.extend(subrubrics)
-        else:
-            continue
-    return rubrics
-
-
 def clean_filename(text):
-    """
-    Clean up text to be safe for a filename:
-      - Lowercase, replace spaces with underscores, remove non-alphanumeric characters.
-    """
     text = text.lower()
     text = re.sub(r"\s+", "_", text)
     text = re.sub(r"[^a-z0-9_]", "", text)
@@ -272,53 +293,12 @@ def clean_filename(text):
 
 
 def save_chapter(chapter, output_dir="data/processed"):
-    """
-    Save the chapter entity as a JSON file in the specified output directory.
-    Filename is generated from the chapter title.
-    """
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
+    # Prune keys with empty outputs.
+    pruned_chapter = prune_empty_keys(chapter)
     filename = f"chapter_{clean_filename(chapter.get('title', 'chapter'))}.json"
     output_path = os.path.join(output_dir, filename)
     with open(output_path, "w", encoding="utf-8") as outfile:
-        json.dump(chapter, outfile, indent=2, ensure_ascii=False)
+        json.dump(pruned_chapter, outfile, indent=2, ensure_ascii=False, sort_keys=False)
     logger.info(f"Chapter saved to {output_path}")
-
-
-def extract_section_from_raw(html):
-    """
-    Scan the raw HTML (after extracting visible text) for a section boundary pattern.
-    Look for a string such as "MIND p. 1" or "VERTIGO p. 96" and return the text before
-    the page marker (uppercased), ignoring any match that equals "KENT".
-    """
-    import re
-
-    from bs4 import BeautifulSoup
-
-    text = BeautifulSoup(html, "lxml").get_text(" ", strip=True)
-    pattern = re.compile(r"([A-Z]+(?:\s+[A-Z]+)*)\s*p\.?\s*\d+", re.IGNORECASE)
-    matches = pattern.findall(text)
-    # Debug: print("DEBUG: Matches found:", matches)
-    for m in matches:
-        section = m.strip().upper()
-        if section != "KENT" and len(section) >= 3:
-            return section
-    return None
-
-
-def extract_section(rubrics):
-    """
-    Scan the list of parsed rubrics for a section boundary.
-    Look for the first rubric whose title matches the pattern
-         <Section Name> p. <number>
-    and return the section portion (uppercased). If none is found, return "UNKNOWN".
-    """
-    pattern = re.compile(r"^(?!KENT\b)(.*?)\s*p\.?\s*\d+", re.IGNORECASE)
-    for rub in rubrics:
-        title = rub.get("title", "").strip()
-        m = pattern.match(title)
-        if m:
-            section = m.group(1).strip()
-            if section:
-                return section.upper()
-    return "UNKNOWN"
