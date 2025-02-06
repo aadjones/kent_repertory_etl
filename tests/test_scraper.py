@@ -6,7 +6,7 @@ from bs4 import BeautifulSoup
 # Assume your scraper functions are in src/scraper.py.
 # For this example, we’ll refactor the functions you already wrote
 # into a module that we can import here.
-from src.scraper import load_local_html
+from src.scraper_utils import load_local_html
 
 
 # We can define a fixture for loading our sample HTML file.
