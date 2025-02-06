@@ -1,3 +1,6 @@
+from src.rubric_parser import group_by_page
+
+
 def test_group_by_page_boundaries():
     # Create a list of rubric dictionaries with boundary markers and some content.
     rubrics = [
@@ -15,7 +18,6 @@ def test_group_by_page_boundaries():
     ]
 
     # Import the group_by_page function from your scraper_utils.
-    from src.scraper_utils import group_by_page
 
     # We pass the subject keyword as "VERTIGO" so that boundaries like "VERTIGO p. 100" are recognized.
     pages = group_by_page(rubrics, subject_keyword="VERTIGO")

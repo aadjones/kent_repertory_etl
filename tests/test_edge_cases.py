@@ -1,20 +1,53 @@
 from bs4 import BeautifulSoup
 
-from scraper import parse_chapter
-from scraper_utils import (
-    clean_header,
-    extract_related_rubrics,
-    is_decorative,
-    merge_duplicate_rubrics,
-    normalize_subject_title,
-    parse_directory,
-    parse_remedy,
-    parse_remedy_list,
-)
+from src.remedy_parser import parse_remedy, parse_remedy_list
+from src.rubric_parser import extract_related_rubrics, merge_duplicate_rubrics, parse_directory
+from src.text_utils import clean_header, is_decorative, normalize_subject_title
+from src.transformer import transform_html_to_chapter
 
 # ----------------------------
-# Decorative Content Tests
+# Full Chapter Transformation Test
 # ----------------------------
+
+
+def test_transform_html_to_chapter_schema():
+    html = """
+    <html>
+      <head><title>KENT0000</title></head>
+      <body>
+         <dir>
+           <p><b>MIND p. 1</b></p>
+           <p><b>ABSENT-MINDED (See Forsaken): <i><font COLOR="#0000ff">tarent.</font></i>, alum.</b></p>
+           <dir>
+              <p>morning : Guai., nat-c., ph-ac., phos.</p>
+              <p>11 a.m. to 4 p.m. : Kali-n.</p>
+           </dir>
+           <p><b>MIND p. 2</b></p>
+           <p><b>AMOROUS (See Lewdness): <b><font COLOR="#ff0000">Acon.</b></font>, calc.</b></p>
+           <p>---------->>>>></p>
+         </dir>
+      </body>
+    </html>
+    """
+    # Use the new transformation function.
+    chapter = transform_html_to_chapter(html, page_info={"pages_covered": "p. 1-5"})
+
+    # Verify the essential keys exist.
+    for key in ["title", "subject", "pages"]:
+        assert key in chapter, f"Missing key '{key}' in chapter."
+
+    # Check that the subject and section are properly set (if your new function does this).
+    # If your transformation no longer sets 'section', adjust the test accordingly.
+    assert chapter["subject"] == "MIND", f"Expected subject 'MIND', got '{chapter['subject']}'"
+
+    # Check that pages are created.
+    assert isinstance(chapter["pages"], list) and len(chapter["pages"]) >= 1, "No pages were created."
+
+    # Verify that decorative or boundary markers (like "MIND p. 1") are not part of the content.
+    for page in chapter["pages"]:
+        for rub in page.get("content", []):
+            normalized = normalize_subject_title(rub["title"]).upper()
+            assert normalized != "MIND", f"Found redundant subject marker '{rub['title']}' in page {page.get('page')}"
 
 
 def test_is_decorative_all_hyphens():
@@ -221,7 +254,7 @@ def test_parse_chapter_schema():
       </body>
     </html>
     """
-    chapter = parse_chapter(html, page_info={"pages_covered": "p. 1-5"})
+    chapter = transform_html_to_chapter(html, page_info={"pages_covered": "p. 1-5"})
     # Verify top-level keys exist.
     for key in ["title", "subject", "pages"]:
         assert key in chapter, f"Missing key '{key}' in chapter."

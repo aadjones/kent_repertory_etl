@@ -1,62 +1,12 @@
-import json
 import logging
-import os
 import re
 
-import requests
 from bs4 import BeautifulSoup, Tag
 
-from transformer_utils import prune_empty_keys
+from remedy_parser import parse_remedy_list
+from text_utils import clean_header, is_decorative, normalize_subject_title
 
-logging.basicConfig(
-    level=logging.DEBUG,  # For detailed logging
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
 logger = logging.getLogger(__name__)
-
-
-def fetch_html(url):
-    logger.info(f"Fetching HTML from URL: {url}")
-    response = requests.get(url)
-    response.raise_for_status()
-    return response.text
-
-
-def load_local_html(filepath):
-    logger.info(f"Loading local HTML file: {filepath}")
-    with open(filepath, "r", encoding="windows-1252") as file:
-        return file.read()
-
-
-def load_and_normalize_html(filepath):
-    """Load and normalize HTML using html5lib."""
-    with open(filepath, "r", encoding="windows-1252") as file:
-        raw_html = file.read()
-    soup = BeautifulSoup(raw_html, "html5lib")
-    return str(soup)
-
-
-def is_decorative(text):
-    stripped = text.strip()
-    if not stripped:
-        return True
-    if all(char in "- " for char in stripped):
-        return True
-    if ">>>" in stripped:
-        return True
-    if re.match(r"^[->]+$", stripped):
-        return True
-    return False
-
-
-def remove_parentheses(text):
-    return re.sub(r"\([^)]*\)", "", text)
-
-
-def normalize_subject_title(title):
-    normalized = re.sub(r"\s*p\.?\s*\d+", "", title, flags=re.IGNORECASE)
-    return normalized.strip()
 
 
 def extract_related_rubrics(header):
@@ -77,11 +27,6 @@ def extract_related_rubrics(header):
         related = [x.strip() for x in cleaned_text.split(",") if x.strip()]
         return related
     return []
-
-
-def clean_header(header):
-    cleaned = re.sub(r"\s*\([^)]*\)", "", header)
-    return cleaned.strip()
 
 
 def merge_duplicate_rubrics(rubrics):
@@ -258,47 +203,24 @@ def group_by_page(rubrics, subject_keyword="MIND"):
     return groups
 
 
-def parse_remedy(remedy_snippet):
-    wrapped = f"<div>{remedy_snippet}</div>"
-    frag = BeautifulSoup(wrapped, "lxml")
-    grade = 1
-    for font in frag.find_all("font"):
-        color = font.get("color", "").lower()
-        if color == "#ff0000":
-            grade = 3
-            break
-        elif color == "#0000ff":
-            grade = max(grade, 2)
-    if grade == 1:
-        if frag.find("b"):
-            grade = 3
-        elif frag.find("i"):
-            grade = 2
-    name = frag.get_text(strip=True)
-    logger.debug(f"Parsed remedy: {name}, grade: {grade}")
-    return {"name": name, "grade": grade}
+def transform_content(rubrics):
+    """
+    Transform a list of rubric dictionaries into the desired format:
+      - Rename "title" to "rubric"
+      - Remove "description" entirely
+      - Preserve the "remedies" list
+      - Recursively process nested rubrics, renaming the key for nested items to "subcontent"
 
-
-def parse_remedy_list(remedy_html):
-    remedy_parts = remedy_html.split(",")
-    remedies = [parse_remedy(part) for part in remedy_parts if part.strip()]
-    return remedies
-
-
-def clean_filename(text):
-    text = text.lower()
-    text = re.sub(r"\s+", "_", text)
-    text = re.sub(r"[^a-z0-9_]", "", text)
-    return text
-
-
-def save_chapter(chapter, output_dir="data/processed"):
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    # Prune keys with empty outputs.
-    pruned_chapter = prune_empty_keys(chapter)
-    filename = f"chapter_{clean_filename(chapter.get('title', 'chapter'))}.json"
-    output_path = os.path.join(output_dir, filename)
-    with open(output_path, "w", encoding="utf-8") as outfile:
-        json.dump(pruned_chapter, outfile, indent=2, ensure_ascii=False, sort_keys=False)
-    logger.info(f"Chapter saved to {output_path}")
+    Returns a new list of dictionaries in the final schema.
+    """
+    transformed = []
+    for rub in rubrics:
+        new_rub = {
+            "rubric": rub.get("title", "").strip(),
+            "remedies": rub.get("remedies", []),
+        }
+        if rub.get("subrubrics"):
+            # Instead of using "content" here, we use "subcontent" for nested items.
+            new_rub["subcontent"] = transform_content(rub["subrubrics"])
+        transformed.append(new_rub)
+    return transformed

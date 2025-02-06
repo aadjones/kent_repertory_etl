@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 
-from scraper_utils import clean_header, extract_related_rubrics, is_decorative, parse_directory
+from src.rubric_parser import extract_related_rubrics, parse_directory
+from src.text_utils import clean_header, is_decorative
 
 # ----------------------------
 # Test for related rubrics extraction

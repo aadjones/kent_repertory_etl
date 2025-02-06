@@ -1,3 +1,6 @@
+from src.transformer import transform_html_to_chapter
+
+
 def test_dynamic_section_extraction():
     html = """
     <html>
@@ -12,8 +15,7 @@ def test_dynamic_section_extraction():
       </body>
     </html>
     """
-    from src.scraper import parse_chapter
 
-    chapter = parse_chapter(html, page_info={"pages_covered": "p. 1-5"})
+    chapter = transform_html_to_chapter(html, page_info={"pages_covered": "p. 1-5"})
     # The section should be extracted as "MIND" from the line "MIND p. 1"
     assert chapter["section"] == "MIND", f"Expected section 'MIND', got {chapter['section']}"

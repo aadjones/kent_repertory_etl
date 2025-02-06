@@ -1,6 +1,6 @@
 from bs4 import BeautifulSoup
 
-from scraper_utils import parse_directory
+from src.rubric_parser import parse_directory
 
 
 def test_problematic_header_extraction():
