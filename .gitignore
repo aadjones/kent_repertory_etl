@@ -21,3 +21,6 @@ Desktop.ini
 
 # Log file
 app.log
+
+
+*.db
