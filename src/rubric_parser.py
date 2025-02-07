@@ -4,15 +4,35 @@ import re
 from bs4 import BeautifulSoup, Tag
 
 from remedy_parser import parse_remedy_list
-from text_utils import clean_header, extract_page_number, is_decorative, is_page_break, normalize_subject_title
+from text_utils import (
+    clean_header,
+    extract_page_number,
+    is_decorative,
+    is_page_break,
+    normalize_subject_title,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def parse_directory(tag, level=0, current_page=None):
+def parse_directory(tag, level=0, current_page=None, section=None):
     """
     Recursively parse a <dir> tag to extract rubrics in a hierarchical structure.
-    Each rubric (and subrubric) will be annotated with the current page metadata.
+
+    Each rubric is represented as a dictionary with keys:
+      - title: Cleaned rubric title (parenthesized content removed)
+      - related_rubrics: List of strings extracted from any parentheses in the header.
+      - description: Text following a colon (if present), else empty.
+      - remedies: List of remedy dictionaries.
+      - subrubrics: List of child rubrics.
+      - page: The current page (e.g., "P1", "P2") attached to the rubric.
+
+    A <p> is treated as a rubric header if it contains a colon, a <b> element,
+    or if it contains parentheses (to trigger extraction of related rubrics).
+    Decorative entries (e.g. "---------->>>>>") are skipped unless they signal a page break.
+
+    The `section` parameter (e.g., "MIND") is used as the subject keyword for detecting page boundaries.
+    The `current_page` parameter is mutable and gets updated whenever a page break marker is found.
     """
     rubrics = []
     current_rubric = None
@@ -20,27 +40,31 @@ def parse_directory(tag, level=0, current_page=None):
     for child in tag.children:
         if isinstance(child, Tag):
             if child.name == "p":
-                raw = child.decode_contents().strip()
-
-                # Check if this <p> is a page break marker.
-                if is_page_break(raw):
-                    new_page = extract_page_number(raw)
+                # Get the visible text from the <p> element.
+                raw = child.get_text(strip=True)
+                # First, check if this is a page break marker.
+                if is_page_break(raw, subject_keyword=section):
+                    new_page = extract_page_number(raw, subject_keyword=section)
                     if new_page:
                         current_page = new_page
                         logger.debug(f"Detected page break. Setting current_page to {current_page}")
-                    continue  # Skip processing this tag as rubric content.
+                    continue  # Skip this tag for rubric content.
 
-                # Skip decorative content.
+                # Skip decorative paragraphs.
                 if is_decorative(raw):
+                    logger.debug("Skipping decorative content.")
                     continue
 
                 logger.debug(f"Processing raw <p> content: {raw}")
 
-                # Check for rubric header (using colon or other indicators)
-                if ":" in raw or child.find("b") or (len(extract_related_rubrics(raw)) > 0):
-                    # If we already have a current rubric, finalize it before starting a new one.
+                # Determine if this <p> is a rubric header.
+                header_indicator = child.find("b") or (len(extract_related_rubrics(raw)) > 0) or (":" in raw)
+                if header_indicator:
+                    # If there's an existing rubric, finalize it.
                     if current_rubric:
-                        if not is_decorative(current_rubric["title"]):
+                        # Check if current rubric's title is decorative (unless it signals a page break).
+                        page_boundary = extract_page_number(current_rubric["title"], subject_keyword=section)
+                        if not (is_decorative(current_rubric["title"]) and not page_boundary):
                             rubrics.append(current_rubric)
                         current_rubric = None
 
@@ -49,10 +73,12 @@ def parse_directory(tag, level=0, current_page=None):
                         related = extract_related_rubrics(header_raw)
                         header_text = BeautifulSoup(header_raw, "lxml").get_text(strip=True)
                         header_clean = clean_header(header_text)
-                        if is_decorative(header_clean):
+                        page_boundary = extract_page_number(header_clean, subject_keyword=section)
+                        if is_decorative(header_clean) and not page_boundary:
                             logger.debug(f"Header '{header_clean}' is decorative; skipping.")
                             current_rubric = None
                             continue
+                        # Process the remedy part.
                         description = BeautifulSoup(remedy_raw, "lxml").get_text(" ", strip=True)
                         remedies = parse_remedy_list(remedy_raw)
                         current_rubric = {
@@ -61,12 +87,13 @@ def parse_directory(tag, level=0, current_page=None):
                             "remedies": remedies,
                             "description": description,
                             "subrubrics": [],
-                            "page": current_page,  # Annotate with current page.
+                            "page": current_page,
                         }
                     else:
                         header_text = BeautifulSoup(raw, "lxml").get_text(strip=True)
                         header_clean = clean_header(header_text)
-                        if is_decorative(header_clean):
+                        page_boundary = extract_page_number(header_clean, subject_keyword=section)
+                        if is_decorative(header_clean) and not page_boundary:
                             logger.debug(f"Header '{header_clean}' is decorative; skipping.")
                             current_rubric = None
                             continue
@@ -77,11 +104,14 @@ def parse_directory(tag, level=0, current_page=None):
                             "remedies": [],
                             "description": "",
                             "subrubrics": [],
-                            "page": current_page,  # Annotate with current page.
+                            "page": current_page,
                         }
-                    logger.debug(f"Created rubric: title='{current_rubric['title']}', page='{current_page}'")
+                    logger.debug(
+                        f"Created rubric: title='{current_rubric['title']}', page='{current_page}', "
+                        f"related_rubrics={current_rubric['related_rubrics']}"
+                    )
                 else:
-                    # Treat as additional detail.
+                    # Treat this <p> as additional detail.
                     additional = BeautifulSoup(raw, "lxml").get_text(" ", strip=True)
                     if additional and not is_decorative(additional):
                         if current_rubric:
@@ -93,11 +123,11 @@ def parse_directory(tag, level=0, current_page=None):
                                 "remedies": [],
                                 "description": "",
                                 "subrubrics": [],
-                                "page": current_page,  # Annotate with current page.
+                                "page": current_page,
                             }
             elif child.name == "dir":
-                # Recursively parse nested rubrics, carrying forward the current_page context.
-                subrubrics = parse_directory(child, level + 1, current_page=current_page)
+                # Recursively parse nested rubrics, passing along the current_page and section.
+                subrubrics = parse_directory(child, level + 1, current_page=current_page, section=section)
                 if current_rubric:
                     current_rubric["subrubrics"].extend(subrubrics)
                 else:
@@ -105,8 +135,10 @@ def parse_directory(tag, level=0, current_page=None):
             else:
                 continue
 
-    if current_rubric and not is_decorative(current_rubric["title"]):
-        rubrics.append(current_rubric)
+    if current_rubric:
+        page_boundary = extract_page_number(current_rubric["title"], subject_keyword=section)
+        if not (is_decorative(current_rubric["title"]) and not page_boundary):
+            rubrics.append(current_rubric)
     return rubrics
 
 
@@ -209,12 +241,19 @@ def transform_content(rubrics):
       - Preserve "related_rubrics"
       - Preserve the "remedies" list
       - Recursively process nested rubrics (using "subcontent")
+
+    Any rubric whose title is exactly "KENT" (ignoring case) is filtered out.
     Returns a new list of dictionaries in the final schema.
     """
     transformed = []
     for rub in rubrics:
+        title = rub.get("title", "").strip()
+        # Skip rubrics whose title is "KENT"
+        if title.upper() == "KENT":
+            continue
+
         new_rub = {
-            "rubric": rub.get("title", "").strip(),
+            "rubric": title,
             "related_rubrics": rub.get("related_rubrics", []),
             "remedies": rub.get("remedies", []),
             "page": rub.get("page"),  # Retain page metadata if present.

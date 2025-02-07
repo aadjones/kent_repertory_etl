@@ -19,7 +19,7 @@ def transform_html_to_chapter(html, page_info=None):
     chapter_title = title_tag.get_text(strip=True) if title_tag else "No title found"
     chapter["title"] = chapter_title
 
-    # Use the dynamic section extractor to get the section, e.g., "MIND"
+    # Extract the subject/section programmatically.
     section = extract_section(soup)
     chapter["section"] = section if section else None
 
@@ -29,13 +29,15 @@ def transform_html_to_chapter(html, page_info=None):
     # Instead of grouping by page, simply parse the rubric directory.
     dir_tag = soup.find("dir")
     if dir_tag:
-        rubrics = parse_directory(dir_tag, current_page="P1")  # Each rubric now has a "page" key, if applicable.
+        # Here, we set a default current_page; if you have a different rule for starting page,
+        # you can adjust this. (Often pages start at "P1" for the given section.)
+        rubrics = parse_directory(dir_tag, current_page="P1", section=section)
     else:
         rubrics = []
 
-    # Optionally transform the rubric structure (e.g., rename keys).
+    # Transform the raw rubric structure into your final schema.
     chapter["rubrics"] = transform_content(rubrics)
 
-    # Clean up empty keys from the final chapter object.
+    # Remove keys that have empty values.
     chapter = prune_empty_keys(chapter)
     return chapter
