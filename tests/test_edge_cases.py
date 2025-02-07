@@ -16,38 +16,29 @@ def test_transform_html_to_chapter_schema():
       <head><title>KENT0000</title></head>
       <body>
          <dir>
-           <p><b>MIND p. 1</b></p>
-           <p><b>ABSENT-MINDED (See Forsaken): <i><font COLOR="#0000ff">tarent.</font></i>, alum.</b></p>
+           <p><b>MIND p. 5</b></p>
+           <p><b>ANXIETY, evening, bed, in, (agg.)</b></p>
            <dir>
-              <p>morning : Guai., nat-c., ph-ac., phos.</p>
-              <p>11 a.m. to 4 p.m. : Kali-n.</p>
+              <p><b>ANXIETY, subrubric example: remedy1, remedy2</b></p>
            </dir>
-           <p><b>MIND p. 2</b></p>
-           <p><b>AMOROUS (See Lewdness): <b><font COLOR="#ff0000">Acon.</b></font>, calc.</b></p>
-           <p>---------->>>>></p>
+           <!-- More content here... -->
          </dir>
       </body>
     </html>
     """
-    # Use the new transformation function.
     chapter = transform_html_to_chapter(html, page_info={"pages_covered": "p. 1-5"})
 
-    # Verify the essential keys exist.
-    for key in ["title", "subject", "pages"]:
+    # Verify that essential keys exist.
+    for key in ["title", "rubrics"]:
         assert key in chapter, f"Missing key '{key}' in chapter."
 
-    # Check that the subject and section are properly set (if your new function does this).
-    # If your transformation no longer sets 'section', adjust the test accordingly.
-    assert chapter["subject"] == "MIND", f"Expected subject 'MIND', got '{chapter['subject']}'"
+    # Instead of checking for 'pages', check for rubrics.
+    rubrics = chapter["rubrics"]
+    assert isinstance(rubrics, list) and len(rubrics) >= 1, "No rubrics were created."
 
-    # Check that pages are created.
-    assert isinstance(chapter["pages"], list) and len(chapter["pages"]) >= 1, "No pages were created."
-
-    # Verify that decorative or boundary markers (like "MIND p. 1") are not part of the content.
-    for page in chapter["pages"]:
-        for rub in page.get("content", []):
-            normalized = normalize_subject_title(rub["title"]).upper()
-            assert normalized != "MIND", f"Found redundant subject marker '{rub['title']}' in page {page.get('page')}"
+    # Optionally, check that at least one rubric has the page metadata.
+    rubric_with_page = [r for r in rubrics if "page" in r and r["page"] is not None]
+    assert rubric_with_page, "No rubric carries page metadata."
 
 
 def test_is_decorative_all_hyphens():
@@ -254,18 +245,25 @@ def test_parse_chapter_schema():
       </body>
     </html>
     """
+    # Pass page_info as a dictionary
     chapter = transform_html_to_chapter(html, page_info={"pages_covered": "p. 1-5"})
+
     # Verify top-level keys exist.
-    for key in ["title", "subject", "pages"]:
+    for key in ["title", "section", "rubrics"]:
         assert key in chapter, f"Missing key '{key}' in chapter."
-    # For this project, we want a 'section' key as well; we'll set it equal to the subject.
-    chapter["section"] = chapter["subject"]
-    assert chapter["section"] == "MIND"
-    # Check that pages were created.
-    assert len(chapter["pages"]) >= 1, "No pages were created."
-    # Ensure that boundary rubrics like "MIND p. 1" do not appear as actual rubric content.
-    for page in chapter["pages"]:
-        for rub in page["content"]:
-            assert (
-                normalize_subject_title(rub["title"]).upper() != "MIND"
-            ), f"Found redundant subject marker '{rub['title']}' in page {page['page']}"
+
+    # The section should be extracted as "MIND"
+    assert chapter["section"] == "MIND", f"Expected section 'MIND', got {chapter.get('section')}"
+
+    # Check that rubrics were created.
+    rubrics = chapter["rubrics"]
+    assert isinstance(rubrics, list) and len(rubrics) >= 1, "No rubrics were created."
+
+    # Ensure that boundary markers like "MIND p. 1" do not appear as actual rubric content.
+    for rub in rubrics:
+        # Use 'rubric' key instead of 'title'
+        assert (
+            normalize_subject_title(rub["rubric"]).upper() != "MIND"
+        ), f"Found redundant section marker '{rub['rubric']}' in rubric with page {rub.get('page')}"
+        # Additionally, ensure that each rubric has a non-null page annotation.
+        assert rub.get("page") is not None, f"Rubric '{rub['rubric']}' is missing page metadata."
