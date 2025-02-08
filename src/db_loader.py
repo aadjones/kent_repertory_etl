@@ -18,33 +18,31 @@ def load_json(filepath):
 
 
 def insert_chapter(session, chapter_data):
-    """
-    Insert a chapter into the database.
-    """
+    # Create a Chapter record.
     chapter = Chapter(
         title=chapter_data.get("title"),
         section=chapter_data.get("section"),
         pages_covered=chapter_data.get("page_info"),
     )
     session.add(chapter)
-    session.flush()  # chapter.id assigned
+    session.flush()  # so that chapter.id gets assigned
 
-    # If the JSON includes a 'pages' key, use it; otherwise, default to one page.
-    if "pages" in chapter_data:
-        pages_list = chapter_data.get("pages", [])
-    elif "rubrics" in chapter_data:
-        pages_list = [{"page": "P1", "content": chapter_data.get("rubrics", [])}]
-    else:
-        pages_list = []
+    # If the chapter JSON uses a flat structure with rubrics that each have a 'page' attribute,
+    # group them by that attribute.
+    rubrics = chapter_data.get("rubrics", [])
+    pages_dict = {}
+    for rub in rubrics:
+        page_marker = rub.get("page", "P1")
+        pages_dict.setdefault(page_marker, []).append(rub)
 
-    logger.info(f"Inserting chapter '{chapter.title}' with {len(pages_list)} page group(s).")
+    logger.info(f"Inserting chapter '{chapter.title}' with {len(pages_dict)} page group(s).")
 
-    for page_group in pages_list:
-        page_marker = page_group.get("page")
+    for page_marker, rub_list in pages_dict.items():
         page = Page(chapter_id=chapter.id, page=page_marker)
         session.add(page)
-        session.flush()
-        for rubric_data in page_group.get("content", []):
+        session.flush()  # assign page.id
+        # Insert each rubric from this page group.
+        for rubric_data in rub_list:
             insert_rubric(session, rubric_data, page_id=page.id, parent_id=None)
     session.commit()
     logger.info(f"Inserted chapter '{chapter.title}' successfully.")

@@ -22,5 +22,6 @@ Desktop.ini
 # Log file
 app.log
 
-
+# Database files
 *.db
+*.sql
